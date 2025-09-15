@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- Стили по умолчанию для всей страницы --- */
+body {
+  @apply bg-dark-bg text-gray-300 font-sans;
+  /* Запрещаем скролл для body */
+  overflow: hidden; 
+}
+
+/* --- Запрещаем скролл для всего документа --- */
+html {
+  overflow: hidden;
+}
+
+/* --- Класс для скрытия скроллбаров (для чата) --- */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}

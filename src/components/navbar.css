@@ -1,0 +1,146 @@
+/* src/components/navbar.css */
+
+.nav-wrap { 
+  position: sticky; 
+  top: 0; 
+  backdrop-filter: blur(6px); 
+  background: rgba(255,255,255,0.8); 
+  border-bottom: 1px solid #eee; 
+  z-index: 50;
+}
+.nav-inner { 
+  max-width: 1100px; 
+  margin: 0 auto; 
+  padding: 12px 16px; 
+  display: flex; 
+  align-items: center; 
+  gap: 16px; 
+}
+.links { 
+  display: flex;
+  gap: 12px; 
+}
+.link { 
+  text-decoration: none; 
+  color: #333; 
+  padding: 6px 8px; 
+  border-radius: 8px; 
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+.link:hover { 
+  background: #f5f5f5; 
+}
+/* Стиль ТОЛЬКО для ссылок в основной навигации */
+.links .link.active { 
+  background: #111; 
+  color: #fff; 
+}
+.auth { 
+  margin-left: auto; 
+  display: flex; 
+  align-items: center; /* Добавил для лучшего выравнивания */
+  gap: 8px; 
+}
+.btn { 
+  text-decoration: none; 
+  padding: 8px 12px; 
+  border-radius: 10px; 
+  font-weight: 600; 
+  border: 1px solid #e5e5e5; 
+  transition: background-color 0.2s ease, color 0.2s ease;
+  cursor: pointer;
+}
+.btn.ghost { 
+  background: #fff; 
+  color: #111; 
+}
+.btn.ghost:hover { 
+  background: #f5f5f5; 
+}
+.btn.solid { 
+  background: #111; 
+  color: #fff; 
+  border-color: #111; 
+}
+
+/* --- Стили для выпадающего меню --- */
+
+.dropdown-container {
+  position: relative;
+}
+
+.dropdown-trigger {
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  color: #333;
+  /* Важно: padding на самом триггере, а не на внутреннем div, чтобы рамка была правильной */
+  padding: 4px; 
+  border-radius: 9999px; /* Делаем контейнер круглым, чтобы рамка была круглой */
+  transition: box-shadow 0.2s ease; /* Плавный переход для рамки */
+  display: flex;
+  align-items: center;
+}
+
+/* Убираем ненужный hover-эффект */
+.dropdown-trigger:hover {
+  background-color: transparent;
+}
+
+/* Новый, правильный стиль для активного состояния */
+.dropdown-trigger.active {
+  background-color: transparent; 
+  box-shadow: 0 0 0 2px #1591EA; /* Синяя рамка */
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #eee;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  min-width: 200px;
+  z-index: 10;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 8px 12px;
+  font-size: 0.95rem;
+  color: #333;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background-color 0.2s ease;
+}
+.dropdown-item:hover {
+  background-color: #f5f5f5;
+}
+.dropdown-item.logout {
+  border-top: 1px solid #eee;
+}
+
+.balance-link {
+  font-weight: 600;
+  color: #16a34a;
+  text-decoration: none;
+  background-color: #f0fdf4;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid #bbf7d0;
+  transition: background-color 0.2s ease;
+}
+.balance-link:hover {
+  background-color: #dcfce7;
+}
