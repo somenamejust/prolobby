@@ -2,9 +2,9 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
-export default function UserActionsDropdown({ targetUser, currentUser, lobby, onShowProfile }) {
+export default function UserActionsDropdown({ targetUser, currentUser, lobby, onShowProfile, onKickPlayer }) {
   // Получаем все необходимые функции из контекста
-  const { sendFriendRequest, praiseUser, reportUser, kickUser } = useAuth();
+  const { sendFriendRequest, praiseUser, reportUser } = useAuth();
   
   // Локальное состояние, чтобы отслеживать, какие действия уже выполнены
   const [isPraised, setIsPraised] = useState(false);
@@ -32,15 +32,12 @@ export default function UserActionsDropdown({ targetUser, currentUser, lobby, on
   };
 
   const handleKick = () => {
-    if (window.confirm(`Вы уверены, что хотите выгнать ${targetUser.username} из лобби?`)) {
-      kickUser(targetUser, lobby);
-      toast(`${targetUser.username} был исключен из лобби.`);
-    }
+    // Просто вызываем функцию, которую нам передали из LobbyIn.jsx
+    onKickPlayer(targetUser); 
   };
 
   const handleAddFriend = () => {
     sendFriendRequest(targetUser);
-    toast('Заявка в друзья отправлена!');
     // Здесь можно будет обновить состояние кнопки на "Заявка отправлена", если нужно
   };
 

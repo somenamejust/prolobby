@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { ref, onValue, set } from "firebase/database";
 import toast from 'react-hot-toast';
+import axios from 'axios';
+
 import UserProfileModal from '../components/UserProfileModal';
 import UserActionsDropdown from '../components/UserActionsDropdown';
 import GameInProgressModal from '../components/GameInProgressModal';
@@ -38,100 +38,119 @@ const GAME_ASSETS = {
 export default function LobbyIn() {
   // --- 1. ХУКИ И СОСТОЯНИЯ ---
   const { lobbyId } = useParams();
-  const { user, allUsers, deductBalance, refundBalance, joinLobbySession, leaveLobbySession, distributePrizes, processPayouts } = useAuth();
+  const { user, leaveLobbySession, refreshUser } = useAuth();
   const navigate = useNavigate();
 
-  const [allLobbies, setAllLobbies] = useState([]);
   const [lobby, setLobby] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRedirecting, setIsRedirecting] = useState(false);
   const [chatMessage, setChatMessage] = useState('');
   const [modalUser, setModalUser] = useState(null);
-
-  const allLobbiesRef = useRef([]);
-
   const [timer, setTimer] = useState(null);
-
-  // --- 👇 3. ИЗМЕНЯЕМ СОСТОЯНИЕ ДЛЯ ДРОПДАУНА 👇 ---
-  // Убираем activeDropdown, добавляем menuData
   const [menuData, setMenuData] = useState({ targetUser: null, position: null });
-  const dropdownRef = useRef(null); // Ref для отслеживания кликов вне меню
+  
+  const dropdownRef = useRef(null);
+  const chatContainerRef = useRef(null);
 
   // --- 2. ЭФФЕКТЫ ---
+  // --- 1. useEffect: ЗАГРУЗЧИК ДАННЫХ ---
+  // Его единственная задача - постоянно получать свежие данные о лобби.
   useEffect(() => {
     const fetchLobbyData = async () => {
-      setIsLoading(true);
       try {
-        // Запрашиваем у бэкенда инфо именно об этом лобби
-        const response = await fetch(`http://localhost:5000/api/lobbies/${lobbyId}`);
-        if (!response.ok) {
-          throw new Error('Лобби не найдено');
+        const response = await fetch(`/api/lobbies/${lobbyId}`);
+        if (response.ok) {
+          const data = await response.json();
+          setLobby(data);
+        } else {
+          setLobby(null);
         }
-        const data = await response.json();
-        setLobby(data);
       } catch (error) {
         console.error("Ошибка при загрузке данных лобби:", error);
-        setLobby(null); // Если ошибка, лобби не найдено
+        setLobby(null);
       } finally {
-        setIsLoading(false);
+        if (isLoading) setIsLoading(false);
       }
     };
 
-    fetchLobbyData();
-    // Этот useEffect теперь не зависит от общего списка лобби
-  }, [lobbyId]);
+    fetchLobbyData(); // Вызов при первой загрузке
+    const intervalId = setInterval(fetchLobbyData, 3000); // Повторять каждые 3 секунды
 
+    return () => clearInterval(intervalId); // Очистка при уходе
+  }, [lobbyId, isLoading]);
+
+
+  // --- 2. useEffect: РЕАГИРУЮЩИЙ НА ИЗМЕНЕНИЯ ---
+  // Этот эффект следит за состоянием `lobby` и решает, нужно ли перенаправлять пользователя.
   useEffect(() => {
-    if (lobby?.status !== 'countdown') {
+    // Не делать ничего, если лобби еще не загрузилось или мы уже в процессе перенаправления
+    if (!lobby || isRedirecting) return;
+
+    // Сценарий 1: Игра завершена. Это сработает для ВСЕХ игроков.
+    if (lobby.status === 'finished') {
+      setIsRedirecting(true); // Включаем флаг, чтобы избежать повторного срабатывания
+      toast.success("Игра завершена. Возвращение в лобби...");
+      
+      refreshUser().then(() => {
+        setTimeout(() => {
+          leaveLobbySession();
+          navigate('/lobby');
+        }, 4000);
+      });
+      return; // Выходим, чтобы не проверять другие условия
+    }
+
+    // Сценарий 2: Игрока кикнули.
+    if (user) {
+      const amIInSlots = lobby.slots.some(slot => slot.user?.id === user.id);
+      const amIInSpectators = lobby.spectators.some(spec => spec.id === user.id);
+      
+      // Если меня нет ни в слотах, ни в зрителях, но я "думал", что я в этом лобби
+      if (!amIInSlots && !amIInSpectators && String(user.currentLobbyId) === String(lobbyId)) {
+        setIsRedirecting(true);
+        toast.error("Хост исключил вас из лобби.");
+        leaveLobbySession();
+        navigate('/lobby');
+      }
+    }
+  }, [lobby, user, lobbyId, isRedirecting, navigate, leaveLobbySession, refreshUser]);
+
+  // --- 3. useEffect: ТАЙМЕР ---
+  useEffect(() => {
+    if (lobby?.status !== 'countdown' || !lobby.countdownStartTime) {
       setTimer(null);
       return;
     }
-
     const interval = setInterval(() => {
-      const startTime = lobby.countdownStartTime;
-      const now = Date.now();
-      const elapsed = Math.floor((now - startTime) / 1000);
-      const remaining = 60 - elapsed;
-
+      const remaining = 60 - Math.floor((Date.now() - lobby.countdownStartTime) / 1000);
       if (remaining <= 0) {
         setTimer(0);
-        // Если я хост, я запускаю игру, когда таймер истек
-        if (user?.email === lobby.host.email) {
-          handleStartGame();
-        }
         clearInterval(interval);
+        // Логика авто-старта игры теперь полностью на сервере, клиент просто ждёт смены статуса
       } else {
         setTimer(remaining);
       }
     }, 1000);
-
-    return () => clearInterval(interval); // Очищаем интервал при уходе
-  }, [lobby, user]); // Следим за изменениями в лобби
-
-  const { playersInSlots, allPlayersReady } = useMemo(() => {
-    if (!lobby || !lobby.slots) return { playersInSlots: [], allPlayersReady: false };
-    
-    const players = lobby.slots.filter(slot => slot.user);
-    return {
-      playersInSlots: players,
-      allPlayersReady: players.length === lobby.maxPlayers && players.every(p => p.user.isReady)
-    };
+    return () => clearInterval(interval);
   }, [lobby]);
 
-  const chatContainerRef = useRef(null);
-
+  // --- useMemo для вычисления готовности (без изменений) ---
+  const { allPlayersReady } = useMemo(() => {
+    if (!lobby?.slots) return { allPlayersReady: false };
+    const playersInSlots = lobby.slots.filter(slot => slot.user);
+    return {
+      allPlayersReady: playersInSlots.length === lobby.maxPlayers && playersInSlots.every(p => p.user.isReady)
+    };
+  }, [lobby]);
+  
+  // --- useEffect для прокрутки чата (без изменений) ---
   useEffect(() => {
-    // Если "якорь" привязан к элементу...
     if (chatContainerRef.current) {
-      // ...прокручиваем его до самого низа
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [lobby?.chat]);
 
   // --- 3. ОБРАБОТЧИКИ СОБЫТИЙ ---
-
-  const updateLobbiesInFirebase = (updatedLobbies) => {
-    return set(ref(db, 'lobbies'), updatedLobbies);
-  };
 
     // --- 👇 5. ДОБАВЛЯЕМ ЕДИНЫЙ ОБРАБОТЧИК КЛИКА ПО ЮЗЕРУ 👇 ---
   const handleUserClick = (event, targetUser) => {
@@ -148,228 +167,236 @@ export default function LobbyIn() {
     }
   };
 
-  const handleOccupySlot = (slotToOccupy) => {
+  const handleOccupySlot = async (slotToOccupy) => {
     if (!user || !lobby) return;
 
-    const updatedLobbies = JSON.parse(JSON.stringify(allLobbiesRef.current));
-    const lobbyIndex = updatedLobbies.findIndex(l => l.id === lobby.id);
-    if (lobbyIndex === -1) return;
-    
-    const currentLobby = updatedLobbies[lobbyIndex];
-    if (!currentLobby.slots) currentLobby.slots = [];
-    if (!currentLobby.spectators) currentLobby.spectators = [];
+    try {
+      const response = await fetch(`/api/lobbies/${lobby.id}/occupy`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userId: user.id, 
+          slot: { team: slotToOccupy.team, position: slotToOccupy.position } 
+        }),
+      });
 
-    const currentUserSlotIndex = currentLobby.slots.findIndex(s => s.user?.email === user.email);
+      const updatedLobby = await response.json();
 
-    if (currentUserSlotIndex !== -1) {
-      // Сценарий 1: Игрок перемещается (ничего не меняем, все верно)
-      const newSlotIndex = currentLobby.slots.findIndex(s => s.team === slotToOccupy.team && s.position === slotToOccupy.position);
-      if (currentUserSlotIndex === newSlotIndex) return;
-      const oldUserData = currentLobby.slots[currentUserSlotIndex].user;
-      currentLobby.slots[currentUserSlotIndex].user = null;
-      if (newSlotIndex !== -1) {
-        currentLobby.slots[newSlotIndex].user = oldUserData;
+      if (!response.ok) {
+        throw new Error(updatedLobby.message || "Не удалось занять слот");
       }
-    } else {
-      // Сценарий 2: Зритель занимает слот
-      const entryFee = lobby.entryFee;
 
-      // 👇 ПРОВЕРКА БАЛАНСА ОСТАЕТСЯ 👇
-      if (user.balance < entryFee) { 
-        alert("Недостаточно средств!"); 
-        return; 
-      }
-      
-      // ❌ СПИСАНИЕ БАЛАНСА УБИРАЕМ ❌
-      // deductBalance(entryFee);
-      
-      currentLobby.spectators = currentLobby.spectators.filter(spec => spec.email !== user.email);
-      const slotIndex = currentLobby.slots.findIndex(s => s.team === slotToOccupy.team && s.position === slotToOccupy.position);
-      if (slotIndex !== -1) {
-        currentLobby.slots[slotIndex].user = { ...user, isReady: false };
-        currentLobby.players = currentLobby.slots.filter(s => s.user).length;
-      }
+      setLobby(updatedLobby); // Обновляем состояние лобби
+
+    } catch (error) {
+      console.error("Ошибка при попытке занять слот:", error);
+      toast.error(error.message);
     }
-    updateLobbiesInFirebase(updatedLobbies);
   };
 
   const handleLeaveLobby = async () => {
     if (!user || !lobby) return;
 
-    let lobbiesToUpdate = JSON.parse(JSON.stringify(allLobbies));
-    const lobbyIndex = lobbiesToUpdate.findIndex(l => l.id === lobby.id);
-    if (lobbyIndex === -1) {
-      leaveLobbySession();
-      navigate('/lobby');
-      return;
-    }
-
-    const currentLobby = lobbiesToUpdate[lobbyIndex];
-    
-    // ❌ УДАЛЯЕМ ВЕСЬ ЭТОТ БЛОК ❌
-    /*
-    const userSlot = (currentLobby.slots ?? []).find(slot => slot.user?.email === user.email);
-    if (userSlot) {
-      refundBalance(currentLobby.entryFee);
-    }
-    */
-    
-    const playersInLobby = (currentLobby.slots.filter(s => s.user).length + (currentLobby.spectators ?? []).length);
-    
-    if (playersInLobby <= 1) {
-      lobbiesToUpdate = lobbiesToUpdate.filter(l => l.id !== lobby.id);
-    } else {
-      currentLobby.spectators = (currentLobby.spectators ?? []).filter(spec => spec.email !== user.email);
-      currentLobby.slots = (currentLobby.slots ?? []).map(slot => {
-        if (slot.user?.email === user.email) return { ...slot, user: null };
-        return slot;
-      });
-      currentLobby.players = currentLobby.slots.filter(s => s.user).length;
-    }
-    
     try {
-      await updateLobbiesInFirebase(lobbiesToUpdate);
-      leaveLobbySession();
+      // Call the already-refactored function from AuthContext.
+      // This is the function that sends the request to your backend.
+      await leaveLobbySession();
+      
+      // After the backend confirms the exit and deletes the lobby, navigate the user away.
       navigate('/lobby');
+      toast.success("Вы покинули лобби.");
+
     } catch (error) {
       console.error("Ошибка при выходе из лобби:", error);
-      toast.error("Произошла ошибка при выходе из лобби.");
+      toast.error("Не удалось покинуть лобби.");
     }
   };
 
-  const handleLeaveSlot = () => {
+  const handleLeaveSlot = async () => {
     if (!user || !lobby) return;
 
-    // ❌ УДАЛЯЕМ ЭТУ СТРОКУ ❌
-    // refundBalance(lobby.entryFee);
-    
-    // Используем данные из ref, а не из state
-    const updatedLobbies = JSON.parse(JSON.stringify(allLobbiesRef.current));
-    const lobbyIndex = updatedLobbies.findIndex(l => l.id === lobby.id);
-    if (lobbyIndex === -1) return;
-    
-    const currentLobby = updatedLobbies[lobbyIndex];
-    if (!currentLobby.slots) currentLobby.slots = [];
-    if (!currentLobby.spectators) currentLobby.spectators = [];
+    try {
+      const response = await fetch(`/api/lobbies/${lobby.id}/vacate`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
 
-    const slotIndex = currentLobby.slots.findIndex(s => s.user?.email === user.email);
-    if (slotIndex !== -1) {
-      currentLobby.slots[slotIndex].user = null;
-      currentLobby.players = currentLobby.slots.filter(s => s.user).length;
-    }
-    
-    const isAlreadySpectator = currentLobby.spectators.some(spec => spec.email === user.email);
-    if (!isAlreadySpectator) {
-      currentLobby.spectators.push(user);
-    }
-    
-    updateLobbiesInFirebase(updatedLobbies);
-  };
+      const updatedLobby = await response.json();
 
-  const handleConfirmReady = () => {
-    if (!user || !lobby) return;
-
-    // Используем данные из ref для максимальной актуальности
-    const updatedLobbies = JSON.parse(JSON.stringify(allLobbiesRef.current));
-    const lobbyIndex = updatedLobbies.findIndex(l => l.id === lobby.id);
-    if (lobbyIndex === -1) return;
-
-    const currentLobby = updatedLobbies[lobbyIndex];
-    const slotIndex = (currentLobby.slots || []).findIndex(s => s.user?.email === user.email);
-
-    if (slotIndex !== -1) {
-      // 1. Меняем статус готовности текущего игрока
-      const currentState = currentLobby.slots[slotIndex].user.isReady;
-      currentLobby.slots[slotIndex].user.isReady = !currentState;
-      
-      // --- 👇 НОВАЯ ЛОГИКА ДЛЯ ЗАПУСКА ТАЙМЕРА 👇 ---
-
-      // 2. После изменения, проверяем, готовы ли теперь ВСЕ игроки
-      const playersInSlots = currentLobby.slots.filter(slot => slot.user);
-      const areAllPlayersReady = playersInSlots.length === currentLobby.maxPlayers && playersInSlots.every(p => p.user.isReady);
-
-      if (areAllPlayersReady) {
-        // 3. Если все готовы - запускаем отсчет!
-        currentLobby.status = 'countdown';
-        currentLobby.countdownStartTime = Date.now();
-      } else {
-        // 4. Если кто-то отменил готовность - сбрасываем таймер
-        currentLobby.status = 'waiting';
-        currentLobby.countdownStartTime = null;
+      if (!response.ok) {
+        throw new Error(updatedLobby.message || "Не удалось освободить слот");
       }
-      // --- Конец новой логики ---
 
-      // 5. Мгновенно обновляем интерфейс локально
-      setLobby(currentLobby); 
-      
-      // 6. Отправляем все изменения в Firebase
-      updateLobbiesInFirebase(updatedLobbies);
+      setLobby(updatedLobby); // Обновляем состояние
+
+    } catch (error) {
+      console.error("Ошибка при освобождении слота:", error);
+      toast.error(error.message);
     }
   };
 
-  const handleStartGame = () => {
-    if (user?.email !== lobby?.host?.email) return;
+  const handleReadyToggle = async () => {
+    if (!lobby || !user) return;
 
-    const updatedLobbies = JSON.parse(JSON.stringify(allLobbiesRef.current));
+    try {
+      const response = await fetch(`/api/lobbies/${lobby.id}/ready`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
 
-    const lobbyIndex = updatedLobbies.findIndex(l => l.id === lobby.id);
-    if (lobbyIndex === -1) {
-      console.error("Не удалось найти лобби для старта игры.");
+      const updatedLobby = await response.json();
+
+      if (!response.ok) {
+        throw new Error(updatedLobby.message || "Не удалось изменить статус");
+      }
+
+      // Мгновенно обновляем состояние лобби данными с сервера
+      setLobby(updatedLobby);
+
+    } catch (error) {
+      console.error("Ошибка при смене статуса:", error);
+      toast.error(error.message || "Не удалось изменить статус");
+    }
+  };
+
+  const handleStartGame = async () => {
+    // Client-side check for better UX
+    if (!user || !lobby || user.email !== lobby.host.email) {
+      toast.error("Only the host can start the game.");
       return;
     }
 
-    updatedLobbies[lobbyIndex].status = 'in_progress';
-    updateLobbiesInFirebase(updatedLobbies);
+    try {
+      const response = await fetch(`/api/lobbies/${lobby.id}/start`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostId: user.id }),
+      });
+
+      const updatedLobby = await response.json();
+
+      if (!response.ok) {
+        throw new Error(updatedLobby.message || "Failed to start the game");
+      }
+
+      // Update the local state with the authoritative response from the server
+      setLobby(updatedLobby);
+      toast.success("The game has started!");
+
+    } catch (error) {
+      console.error("Error starting game:", error);
+      toast.error(error.message);
+    }
   };
 
   const handleDeclareWinner = async (winningTeam) => {
-    if (!user || user.email !== lobby.host.email || !lobby) return;
+      if (!user || !lobby || user.email !== lobby.host.email) return;
 
-    // 1. Получаем самый свежий список всех пользователей
-    let allUsersToUpdate = JSON.parse(JSON.stringify(allUsers));
-    
-    // 2. Определяем победителей и проигравших
-    const winners = (lobby.slots ?? []).filter(slot => slot.user && slot.team === winningTeam);
-    const losers = (lobby.slots ?? []).filter(slot => slot.user && slot.team !== winningTeam);
-    const entryFee = lobby.entryFee;
+      try {
+        const response = await fetch(`/api/lobbies/${lobby.id}/declare-winner`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            hostId: user.id, 
+            winningTeam: winningTeam 
+          }),
+        });
 
-    // 3. Формируем призовой фонд, СПИСЫВАЯ деньги со ВСЕХ
-    const prizePool = entryFee * (winners.length + losers.length);
-    const prizePerWinner = winners.length > 0 ? prizePool / winners.length : 0;
-    
-    // 4. Обновляем балансы
-    // Сначала проигравшие
-    losers.forEach(loserSlot => {
-      const userIndex = allUsersToUpdate.findIndex(u => u.id === loserSlot.user.id);
-      if (userIndex !== -1) {
-        allUsersToUpdate[userIndex].balance -= entryFee;
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.message || "Не удалось завершить игру");
       }
-    });
 
-    // Затем победители
-    winners.forEach(winnerSlot => {
-      const userIndex = allUsersToUpdate.findIndex(u => u.id === winnerSlot.user.id);
-      if (userIndex !== -1) {
-        // Баланс = (текущий баланс - взнос) + выигрыш
-        allUsersToUpdate[userIndex].balance = (allUsersToUpdate[userIndex].balance - entryFee) + prizePerWinner;
-      }
-    });
-    
-    try {
-      // 5. Сохраняем обновленные балансы
-      await set(ref(db, 'users'), allUsersToUpdate);
-      toast.success(`Призы начислены команде ${winningTeam}!`);
-      
-      // 6. Удаляем лобби
-      const updatedLobbies = allLobbies.filter(l => l.id !== lobby.id);
-      await updateLobbiesInFirebase(updatedLobbies);
-      
-      // 7. Очищаем сессию (навигация сработает автоматически)
-      leaveLobbySession();
+      // --- 👇 ИЗМЕНЕНИЕ ЗДЕСЬ 👇 ---
+      // Мы больше НЕ вызываем navigate и setTimeout здесь.
+      // Мы просто показываем уведомление. Обновление статуса лобби
+      // и последующий редирект произойдут автоматически через useEffect.
+      toast.success(result.message);
 
     } catch (error) {
       console.error("Ошибка при завершении игры:", error);
-      toast.error("Не удалось завершить игру.");
+      toast.error(error.message);
+    }
+  };
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!chatMessage.trim() || !user || !lobby) return;
+
+    // Оптимистичное обновление: сначала обновляем UI, потом отправляем запрос
+    // Это создает ощущение мгновенной отправки
+    const newMessage = {
+      user: { id: user.id, username: user.username, avatarUrl: user.avatarUrl },
+      message: chatMessage,
+      timestamp: new Date()
+    };
+    setLobby(prevLobby => ({
+      ...prevLobby,
+      chat: [...prevLobby.chat, newMessage]
+    }));
+    setChatMessage(''); // Сразу очищаем поле ввода
+
+    try {
+      const response = await fetch(`/api/lobbies/${lobby.id}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user, message: chatMessage }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Не удалось отправить сообщение");
+      }
+      
+      // Заменяем "временное" сообщение на точное от сервера,
+      // чтобы все данные были синхронизированы.
+      setLobby(data);
+
+    } catch (error) {
+      console.error("Ошибка при отправке сообщения:", error);
+      toast.error(error.message);
+      // Здесь можно добавить логику отката оптимистичного обновления, если нужно
+    }
+  };
+
+  const handleKickPlayer = async (userToKick) => {
+    // Проверка, что текущий пользователь - хост (для быстрой реакции интерфейса)
+    if (!user || !lobby || user.email !== lobby.host.email) {
+      toast.error("Только хост может выполнять это действие.");
+      return;
+    }
+
+    if (!window.confirm(`Вы уверены, что хотите выгнать ${userToKick.username} из лобби?`)) {
+        return;
+    }
+
+    try {
+      const response = await fetch(`/api/lobbies/${lobby.id}/kick`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userIdToKick: userToKick.id,
+          hostId: user.id // Отправляем ID хоста для проверки на бэкенде
+        }),
+      });
+
+      const updatedLobby = await response.json();
+
+      if (!response.ok) {
+        throw new Error(updatedLobby.message || "Не удалось кикнуть игрока");
+      }
+
+      // Обновляем состояние лобби на клиенте данными с сервера
+      setLobby(updatedLobby);
+      toast.success(`Игрок ${userToKick.username} был исключён.`);
+
+    } catch (error) {
+      console.error("Ошибка при кике игрока:", error);
+      toast.error(error.message);
     }
   };
 
@@ -384,23 +411,6 @@ export default function LobbyIn() {
       </div>
     )
   );
-
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-    if (!chatMessage.trim() || !user || !lobby) return;
-    
-    // 👇 Используем данные из ref, а не из state
-    const updatedLobbies = JSON.parse(JSON.stringify(allLobbiesRef.current));
-    const lobbyIndex = updatedLobbies.findIndex(l => l.id === lobby.id);
-    if (lobbyIndex === -1) return;
-    
-    const currentLobby = updatedLobbies[lobbyIndex];
-    if (!currentLobby.chat) currentLobby.chat = [];
-    currentLobby.chat.push({ user, message: chatMessage });
-    
-    updateLobbiesInFirebase(updatedLobbies);
-    setChatMessage('');
-  };
 
 
   // --- 4. ПРОВЕРКИ И JSX ---
@@ -437,7 +447,8 @@ return (
             zIndex: 30
           }}
         >
-          <UserActionsDropdown 
+          <UserActionsDropdown
+            onKickPlayer={handleKickPlayer} 
             targetUser={menuData.targetUser} 
             currentUser={user}
             lobby={lobby}
@@ -643,7 +654,7 @@ return (
                       {/* Кнопка "Подтвердить" / "Отменить" для игрока в слоте */}
                       {currentUserSlot && (
                         <button 
-                          onClick={handleConfirmReady} 
+                          onClick={handleReadyToggle} 
                           className={`px-6 py-2 rounded-md font-semibold text-white transition-colors font-orbitron transition-transform hover:scale-105 ${
                             currentUserSlot.user?.isReady 
                               ? 'bg-gray-600 hover:bg-gray-500' 

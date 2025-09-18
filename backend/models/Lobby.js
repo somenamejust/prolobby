@@ -18,6 +18,7 @@ const lobbySchema = new mongoose.Schema({
   slots: { type: Array, default: [] },
   spectators: { type: Array, default: [] },
   chat: { type: Array, default: [] },
+  bannedUsers: { type: [String], default: [] }
 });
 
 const Lobby = mongoose.model('Lobby', lobbySchema);

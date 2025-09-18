@@ -1,9 +1,8 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { ref, onValue, set } from "firebase/database";
 import toast from 'react-hot-toast';
+import axios from 'axios';
 
 // --- КОНСТАНТЫ ---
 const GAMES = ["All games", "CS2", "Dota 2", "Valorant", "Fortnite", "Custom Game"];
@@ -27,126 +26,78 @@ const MODE_CONFIG = {
 
 export const initialLobbies = [];
 
-const isUserInAnyLobby = (userEmail, allLobbies) => {
-  if (!Array.isArray(allLobbies)) return false;
-  for (const lobby of allLobbies) {
-    if (!lobby) continue;
-    const isInSlot = (lobby.slots || []).some(slot => slot.user?.email === userEmail);
-    if (isInSlot) return true;
-    const isSpectator = (lobby.spectators || []).some(spec => spec.email === userEmail);
-    if (isSpectator) return true;
-  }
-  return false;
-};
-
 export default function Lobby() {
   // --- ХУКИ И СОСТОЯНИЯ ---
   const [lobbies, setLobbies] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [gameFilter, setGameFilter] = useState("All games");
-  const [modeFilter, setModeFilter] = useState("All modes");
-  const [regionFilter, setRegionFilter] = useState("All regions");
-  const [priceFilter, setPriceFilter] = useState("all");
-  const [search, setSearch] = useState("");
+  const [filters, setFilters] = useState({
+    game: "All games",
+    mode: "All modes",
+    region: "All regions",
+    price: "all",
+    search: ""
+  });
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState({
     title: "", game: "CS2", mode: "5v5", region: "EU", entryFee: 1, lobbyType: 'public', password: '',
   });
 
-  const { user, logout, deductBalance, refundBalance, joinLobbySession, leaveLobbySession } = useAuth();
+  const { user, joinLobbySession } = useAuth();
   const navigate = useNavigate();
 
-  // --- 👇 ОБНОВЛЕННЫЙ useEffect 👇 ---
+    // --- 👇 ОБНОВЛЕННЫЙ useEffect 👇 ---
   useEffect(() => {
     const fetchLobbies = async () => {
-      setIsLoading(true);
       try {
-        // 1. Отправляем запрос на наш бэкенд, чтобы получить список лобби
-        const response = await fetch('http://localhost:5000/api/lobbies');
-        if (!response.ok) {
-          throw new Error('Не удалось загрузить лобби');
-        }
-        const data = await response.json();
-        setLobbies(data);
+        const response = await axios.get('/api/lobbies');
+        setLobbies(response.data);
       } catch (error) {
-        console.error("Ошибка при загрузке лобби:", error);
+        console.error("Ошибка при обновлении лобби:", error);
       } finally {
-        setIsLoading(false);
+        if (isLoading) setIsLoading(false);
       }
     };
-
     fetchLobbies();
-  }, []) // Пустой массив, чтобы запрос выполнился один раз при загрузке
+    const intervalId = setInterval(fetchLobbies, 5000);
+    return () => clearInterval(intervalId);
+  }, [isLoading]);
 
-  // --- ОБРАБОТЧИКИ СОБЫТИЙ ---
-  const handleResetLobbies = () => {
-    if (window.confirm("Вы уверены, что хотите удалить ВСЕ лобби?")) {
-      leaveLobbySession();
-      logout();
-      set(ref(db, 'lobbies'), []);
-    }
+  const handleFilterChange = (e) => {
+    const { name, value } = e.target;
+    setFilters(prevFilters => ({
+      ...prevFilters,
+      [name]: value
+    }));
   };
 
   const clearFilters = () => {
-    setGameFilter("All games");
-    setModeFilter("All modes");
-    setRegionFilter("All regions");
-    setPriceFilter("all");
-    setSearch("");
+    setFilters({
+      game: "All games",
+      mode: "All modes",
+      region: "All regions",
+      price: "all",
+      search: ""
+    });
   };
 
-  const handleJoinAction = async (lobbyId, isSpectator = false) => {
-    if (!user) { navigate('/login'); return; }
-
-    // --- 👇 ЛОГИКА ВЫХОДА ИЗ СТАРОГО ЛОББИ - ПОКА ОСТАВЛЯЕМ НА ФРОНТЕ 👇 ---
-    // (Перенос этой логики на бэкенд - более сложная задача, вернемся к ней позже)
-    if (user.currentLobbyId && user.currentLobbyId !== lobbyId) {
-      if (!window.confirm("Вы уже находитесь в другом лобби. Хотите покинуть его и войти в это?")) {
-        return;
-      }
-      // ... здесь нужна будет логика выхода через бэкенд в будущем
-      leaveLobbySession(); 
-      alert("Вы вышли из предыдущего лобби. Нажмите войти еще раз.");
+  const handleJoinAction = async (lobbyId) => {
+    if (!user) {
+      toast.error("Пожалуйста, войдите в аккаунт, чтобы присоединиться.");
+      navigate('/login');
       return;
     }
-
-    const currentLobby = lobbies.find(l => l.id === lobbyId);
-    if (!currentLobby) { console.error(`Лобби с ID ${lobbyId} не найдено`); return; }
-
-    if (currentLobby.type === 'private') {
-      const inputPassword = prompt("Это приватное лобби. Введите пароль:");
-      if (inputPassword !== currentLobby.password) { toast.error("Неверный пароль!"); return; }
-    }
     
-    if (!isSpectator) {
-      const entryFee = currentLobby.entryFee;
-      if (user.balance < entryFee) { 
-        toast.error("Недостаточно средств на балансе!"); 
-        return; 
-      }
-    }
-
     try {
-      // 1. Отправляем запрос на бэкенд и ЖДЕМ ответа
-      const response = await fetch(`http://localhost:5000/api/lobbies/${lobbyId}/join`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user, isSpectator }),
-      });
+      await axios.put(`/api/lobbies/${lobbyId}/join`, { user });
       
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message);
-      }
-      
-      // 2. Только ПОСЛЕ успешного ответа обновляем сессию и переходим
+      // Сервер дал добро, обновляем сессию и переходим в лобби
       joinLobbySession(lobbyId);
       navigate(`/lobby/${lobbyId}`);
 
     } catch (error) {
-      console.error("Ошибка при входе в лобби:", error);
-      toast.error(error.message || "Не удалось войти в лобби.");
+      // Сервер вернул ошибку (например, "лобби полное", "недостаточно средств"), показываем её
+      console.error("Не удалось войти в лобби:", error);
+      toast.error(error.response?.data?.message || "Произошла ошибка при входе");
     }
   };
 
@@ -158,10 +109,10 @@ export default function Lobby() {
     const entryFee = Number(createForm.entryFee);
     if (user.balance < entryFee) { toast.error("Недостаточно средств для создания лобби!"); return; }
 
-    const newLobby = {
+    const newLobbyData = {
       id: Date.now(),
       title: createForm.title || `${createForm.game} — ${createForm.mode}`,
-      host: { email: user.email }, 
+      host: { id: user.id, email: user.email }, 
       game: createForm.game, 
       mode: createForm.mode, 
       region: createForm.region,
@@ -169,57 +120,56 @@ export default function Lobby() {
       password: createForm.lobbyType === 'private' ? createForm.password : null,
       entryFee: entryFee, 
       maxPlayers: config.maxPlayers,
-      status: 'waiting', // <-- НОВОЕ ПОЛЕ: 'waiting', 'countdown', 'in_progress', 'finished'
-      countdownStartTime: null, // <-- НОВОЕ ПОЛЕ: время начала отсчета 
+      status: 'waiting',
       players: 1,
-      slots: Object.entries(config.teams).flatMap(([teamName, count]) => Array(count).fill(null).map((_, i) => ({ team: teamName, position: i + 1, user: null }))),
-      spectators: [], chat: [],
+      slots: Object.entries(config.teams).flatMap(([teamName, count]) => 
+        Array(count).fill(null).map((_, i) => ({ team: teamName, position: i + 1, user: null }))
+      ),
+      spectators: [], 
+      chat: [],
+      bannedUsers: []
     };
     
-    const firstSlotIndex = newLobby.slots.findIndex(s => s.user === null);
+    const firstSlotIndex = newLobbyData.slots.findIndex(s => s.user === null);
     if (firstSlotIndex !== -1) {
-      newLobby.slots[firstSlotIndex].user = { ...user, isReady: false };
+      newLobbyData.slots[firstSlotIndex].user = { 
+        ...user, 
+        isReady: false 
+      };
     }
-    
-    const updatedLobbies = [newLobby, ...lobbies];
 
     try {
-      // 1. Отправляем данные нового лобби на наш бэкенд
-      const response = await fetch('http://localhost:5000/api/lobbies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newLobby),
-      });
+      const response = await axios.post('/api/lobbies', newLobbyData);
+      const createdLobby = response.data;
       
-      const createdLobby = await response.json();
-
-      if (!response.ok) {
-        throw new Error(createdLobby.message || 'Не удалось создать лобби');
-      }
-
-      // 2. Если все успешно, обновляем список лобби на фронтенде и переходим
+      setLobbies(currentLobbies => [createdLobby, ...currentLobbies]);
+      joinLobbySession(createdLobby.id); // Обновляем сессию для создателя
       navigate(`/lobby/${createdLobby.id}`);
-      
       setShowCreate(false);
-      setCreateForm({ /* ... */ });
-
     } catch (error) {
       console.error("Ошибка при создании лобби:", error);
-      toast.error(error.message);
+      toast.error(error.response?.data?.message || "Не удалось создать лобби");
     }
   };
 
-  const filtered = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    return lobbies.filter((l) => {
-      if (!l) return false;
-      if (gameFilter !== "All games" && l.game !== gameFilter) return false;
-      if (modeFilter !== "All modes" && l.mode !== modeFilter) return false;
-      if (regionFilter !== "All regions" && l.region !== regionFilter) return false;
-      if (s && !l.title.toLowerCase().includes(s)) return false;
+  const filteredLobbies = useMemo(() => {
+    return lobbies.filter(lobby => {
+      const { game, mode, region, search, price } = filters;
+      if (game !== "All games" && lobby.game !== game) return false;
+      if (mode !== "All modes" && lobby.mode !== mode) return false;
+      if (region !== "All regions" && lobby.region !== region) return false;
+      if (search && !lobby.title.toLowerCase().includes(search.toLowerCase())) return false;
+      
+      // Price filter logic
+      const priceOption = PRICE_OPTIONS.find(p => p.value === price);
+      if (priceOption && priceOption.min !== undefined) {
+          if (lobby.entryFee < priceOption.min || lobby.entryFee >= priceOption.max) {
+              return false;
+          }
+      }
       return true;
     });
-  }, [lobbies, gameFilter, modeFilter, regionFilter, search]);
+  }, [lobbies, filters]);
 
   if (isLoading) {
     return <div className="p-8 text-center font-semibold text-gray-500">Загрузка лобби...</div>;
@@ -277,8 +227,9 @@ export default function Lobby() {
           {/* `flex-grow` заставляет этот блок занять всё доступное пространство */}
           <div className="relative flex-grow">
             <input 
-              value={search} 
-              onChange={(e) => setSearch(e.target.value)} 
+              name="search"
+              value={filters.search} 
+              onChange={handleFilterChange} 
               placeholder="Enter lobby name..." 
               className="w-full rounded-md border border-gray-600 bg-dark-bg px-4 py-2 pr-10 text-gray-200"
             />
@@ -290,8 +241,9 @@ export default function Lobby() {
             {/* Фильтр по Игре */}
             <div className="relative">
               <select 
-                value={gameFilter} 
-                onChange={(e) => setGameFilter(e.target.value)} 
+                name="game" 
+                value={filters.game} 
+                onChange={handleFilterChange}
                 className="pl-3 pr-8 py-2 bg-dark-bg border border-gray-600 rounded-md text-gray-200 appearance-none focus:outline-none focus:ring-2 focus:ring-brand-blue"
               >
                 {GAMES.map((g) => (<option key={g} value={g}>{g}</option>))}
@@ -304,8 +256,9 @@ export default function Lobby() {
             {/* Фильтр по Режиму */}
             <div className="relative">
               <select 
-                value={modeFilter} 
-                onChange={(e) => setModeFilter(e.target.value)} 
+                name="mode" 
+                value={filters.mode} 
+                onChange={handleFilterChange}
                 className="pl-3 pr-8 py-2 bg-dark-bg border border-gray-600 rounded-md text-gray-200 appearance-none focus:outline-none focus:ring-2 focus:ring-brand-blue"
               >
                 {MODES.map((m) => (<option key={m} value={m}>{m}</option>))}
@@ -318,8 +271,9 @@ export default function Lobby() {
             {/* Фильтр по Региону */}
             <div className="relative">
               <select 
-                value={regionFilter} 
-                onChange={(e) => setRegionFilter(e.target.value)} 
+                name="region" 
+                value={filters.region} 
+                onChange={handleFilterChange}
                 className="pl-3 pr-8 py-2 bg-dark-bg border border-gray-600 rounded-md text-gray-200 appearance-none focus:outline-none focus:ring-2 focus:ring-brand-blue"
               >
                 {REGIONS.map((r) => (<option key={r} value={r}>{r}</option>))}
@@ -332,8 +286,9 @@ export default function Lobby() {
             {/* Фильтр по Цене */}
             <div className="relative">
               <select 
-                value={priceFilter} 
-                onChange={(e) => setPriceFilter(e.target.value)} 
+                name="price" 
+                value={filters.price} 
+                onChange={handleFilterChange}
                 className="pl-3 pr-8 py-2 bg-dark-bg border border-gray-600 rounded-md text-gray-200 appearance-none focus:outline-none focus:ring-2 focus:ring-brand-blue"
               >
                 {PRICE_OPTIONS.map((p) => (<option key={p.value} value={p.value}>{p.label}</option>))}
@@ -375,8 +330,8 @@ export default function Lobby() {
             <div className="text-center">Type</div>
           </div>
 
-          {filtered.map((l) => (
-            <div key={l.id} className="cursor-pointer" onClick={() => handleJoinAction(l.id, true)}>
+          {filteredLobbies.map((l) => (
+            <div key={l.id} className="cursor-pointer" onClick={() => navigate(`/lobby/${l.id}`)}>
               {/* --- 👇 СТРОКА ЛОББИ С НОВЫМИ КЛАССАМИ 👇 --- */}
               <div 
                 className="grid gap-4 items-center py-4 px-2 border-b border-gray-800 hover:bg-gray-700/50 transition-colors"
@@ -390,7 +345,7 @@ export default function Lobby() {
                 <div className="text-gray-300 text-center">{l.players}/{l.maxPlayers}</div>
                 <div className="text-gray-300 text-center">{(l.spectators || []).length}</div>
                 <div className="flex justify-center">
-                  <button onClick={(e) => { e.stopPropagation(); handleJoinAction(l.id, false); }} className="px-3 py-2 bg-brand-green hover:bg-green-400 text-white rounded-md text-sm z-10 relative transition-colors">
+                  <button onClick={(e) => { e.stopPropagation(); handleJoinAction(l.id); }} className="px-3 py-2 bg-brand-green hover:bg-green-400 text-white rounded-md text-sm z-10 relative transition-colors">
                     ${l.entryFee}
                   </button>
                 </div>

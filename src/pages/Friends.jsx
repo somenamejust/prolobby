@@ -1,36 +1,86 @@
-// src/pages/FriendsPage.jsx
-import React, { useState, useMemo } from 'react';
+// src/pages/Friends.jsx
+import React, { useState, useMemo, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Link } from 'react-router-dom';
+import axios from 'axios'; // 🎯 Импортируем axios для запросов
 import UserProfileModal from '../components/UserProfileModal';
 
 export default function Friends() {
+  // --- 1. ОБНОВЛЯЕМ СОСТОЯНИЕ И КОНТЕКСТ ---
+  // Убираем allUsers, так как он больше не нужен для поиска
   const { user, allUsers, sendFriendRequest, acceptFriendRequest, declineFriendRequest, removeFriend } = useAuth();
+  
   const [activeTab, setActiveTab] = useState('friends');
   const [searchQuery, setSearchQuery] = useState('');
   const [modalUser, setModalUser] = useState(null);
 
-  // --- 👇 ЛОГИКА ПОИСКА И ФИЛЬТРАЦИИ 👇 ---
-  const displayedUsers = useMemo(() => {
-    const friendsMap = new Map((user?.friends || []).map(friendId => [friendId, true]));
+  // 🎯 Новое состояние для хранения результатов поиска с сервера
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false); // Для индикатора загрузки
 
+  const [friends, setFriends] = useState([]); // Для хранения полного списка друзей
+  const [isLoading, setIsLoading] = useState(true);
+
+  // --- 1. useEffect: ЗАГРУЗКА СПИСКА ДРУЗЕЙ ---
+  // Этот эффект срабатывает, когда меняется user.friends (например, после принятия заявки)
+  useEffect(() => {
+    const fetchFriends = async () => {
+      if (!user?.friends || user.friends.length === 0) {
+        setFriends([]);
+        setIsLoading(false);
+        return;
+      }
+      try {
+        setIsLoading(true);
+        const response = await axios.post('/api/users/by-ids', { ids: user.friends });
+        setFriends(response.data);
+      } catch (error) {
+        console.error("Не удалось загрузить список друзей:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchFriends();
+  }, [user]); // Зависимость от user, чтобы перезагружать друзей при обновлении
+
+  // --- 2. useEffect: "ЖИВОЙ" ПОИСК ЧЕРЕЗ API ---
+  useEffect(() => {
     if (searchQuery.trim() === '') {
-      // Если поиск пуст, показываем только друзей
-      return allUsers.filter(u => friendsMap.has(u.id));
-    } else {
-      // Если в поиске что-то есть, ищем по всей базе
-      return allUsers.filter(u => 
-        u.username.toLowerCase().includes(searchQuery.toLowerCase())
-      );
+      setSearchResults([]);
+      return;
     }
-  }, [searchQuery, allUsers, user]);
+
+    setIsSearching(true);
+
+    const delayDebounceFn = setTimeout(async () => {
+      try {
+        // --- 👇 DIAGNOSTIC LOG HERE 👇 ---
+        console.log(`[Фронтенд] Отправка поискового запроса на сервер с term='${searchQuery}'`);
+
+        const response = await axios.get(`/api/users/search`, {
+          params: { 
+            term: searchQuery,
+            currentUserId: user.id 
+          }
+        });
+        setSearchResults(response.data);
+      } catch (error) {
+        console.error("Ошибка поиска:", error);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery, user.id]);
+
+  // --- 3. Определяем, что показывать: результаты поиска или список друзей ---
+  const displayedUsers = searchQuery.trim() ? searchResults : friends;
 
   const handleRemoveFriend = (friend) => {
-    if (window.confirm(`Are you sure to delete ${friend.username} from your friends?`)) {
+    if (window.confirm(`Вы уверены, что хотите удалить ${friend.username} из друзей?`)) {
       removeFriend(friend);
     }
   };
-
 
   if (!user) return <p>Загрузка...</p>;
 
@@ -83,40 +133,53 @@ export default function Friends() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Поиск по логину..."
+                placeholder="Поиск по логину или ID..."
                 className="w-full px-4 py-2 bg-dark-surface border border-gray-600 rounded-lg mb-6 text-gray-200 focus:ring-brand-blue focus:border-brand-blue"
               />
               <div className="space-y-3">
-                {displayedUsers.length > 0 ? displayedUsers.map(foundUser => {
-                  if (foundUser.id === user.id) return null;
-                  
-                  const isFriend = (user.friends || []).includes(foundUser.id);
-                  const hasSentRequest = (user.outgoingRequests || []).some(req => req.toUserId === foundUser.id);
-                  const hasReceivedRequest = (user.friendRequests || []).some(req => req.fromUserId === foundUser.id);
+                {isLoading ? (
+                  <p className="text-gray-500 text-center">Loading...</p>
+                ) : displayedUsers.length > 0 ? (
+                  // The .map function is an expression, it needs to be contained properly
+                  displayedUsers.map(foundUser => {
+                    if (foundUser.id === user.id) return null;
+                    
+                    const isFriend = (user.friends || []).includes(foundUser.id);
+                    const hasSentRequest = (user.outgoingRequests || []).some(req => req.toUserId === foundUser.id);
+                    const hasReceivedRequest = (user.friendRequests || []).some(req => req.fromUserId === foundUser.id);
 
-                  return (
-                    <div key={foundUser.id} className="flex items-center justify-between bg-dark-surface p-3 rounded-lg border border-gray-700">
-                      <div className="flex items-center gap-3">
-                        <img src={foundUser.avatarUrl} alt="Аватар" className="w-12 h-12 rounded-full" />
+                    return (
+                      <div key={foundUser.id} className="flex items-center justify-between bg-dark-surface p-3 rounded-lg border border-gray-700">
+                        <div className="flex items-center gap-3">
+                          <img src={foundUser.avatarUrl} alt="Аватар" className="w-12 h-12 rounded-full" />
+                          <div>
+                            <p className="font-bold text-white">{foundUser.username}</p>
+                            <p className="text-sm text-gray-400">{foundUser.email}</p>
+                          </div>
+                        </div>
                         <div>
-                          <p className="font-bold text-white">{foundUser.username}</p>
-                          <p className="text-sm text-gray-400">{foundUser.email}</p>
+                          {isFriend ? (
+                            <button onClick={() => handleRemoveFriend(foundUser)} className="px-4 py-2 text-sm bg-brand-red hover:bg-red-400 text-white rounded-lg transition-colors">Удалить</button>
+                          ) : hasSentRequest ? (
+                            <button className="px-4 py-2 text-sm bg-gray-600 text-gray-300 rounded-lg cursor-not-allowed">Заявка отправлена</button>
+                          ) : hasReceivedRequest ? (
+                            // --- 👇 POTENTIAL BUG FIX HERE TOO 👇 ---
+                            // You were passing the whole request object, but acceptFriendRequest expects the request object from user.friendRequests.
+                            // Let's find the correct request object to pass.
+                            <button onClick={() => {
+                                const request = user.friendRequests.find(req => req.fromUserId === foundUser.id);
+                                acceptFriendRequest(request);
+                            }} className="px-4 py-2 text-sm bg-teal-500 text-white rounded-lg hover:bg-teal-600">Принять заявку</button>
+                          ) : (
+                            <button onClick={() => sendFriendRequest(foundUser)} className="px-4 py-2 text-sm bg-brand-green hover:bg-green-400 text-white rounded-lg transition-colors">Добавить</button>
+                          )}
                         </div>
                       </div>
-                      <div>
-                        {isFriend ? (
-                          <button onClick={() => handleRemoveFriend(foundUser)} className="px-4 py-2 text-sm bg-brand-red hover:bg-red-400 text-white rounded-lg transition-colors">Удалить</button>
-                        ) : hasSentRequest ? (
-                          <button className="px-4 py-2 text-sm bg-gray-600 text-gray-300 rounded-lg cursor-not-allowed">Заявка отправлена</button>
-                        ) : hasReceivedRequest ? (
-                          <button onClick={() => acceptFriendRequest(hasReceivedRequest)} className="px-4 py-2 text-sm bg-teal-500 text-white rounded-lg hover:bg-teal-600">Принять заявку</button>
-                        ) : (
-                          <button onClick={() => sendFriendRequest(foundUser)} className="px-4 py-2 text-sm bg-brand-green hover:bg-green-400 text-white rounded-lg transition-colors">Добавить</button>
-                        )}
-                      </div>
-                    </div>
-                  )
-                }) : <p className="text-gray-500">Ничего не найдено.</p>}
+                    );
+                  })
+                ) : ( // <-- The syntax is now correct. The ternary continues after the .map() call.
+                  <p className="text-gray-500 text-center">{searchQuery ? "Ничего не найдено." : "У вас пока нет друзей."}</p>
+                )}
               </div>
             </div>
           )}
