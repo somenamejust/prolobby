@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import axios from 'axios';
+import { io } from "socket.io-client";
 
 import UserProfileModal from '../components/UserProfileModal';
 import UserActionsDropdown from '../components/UserActionsDropdown';
@@ -56,28 +57,45 @@ export default function LobbyIn() {
   // --- 1. useEffect: ЗАГРУЗЧИК ДАННЫХ ---
   // Его единственная задача - постоянно получать свежие данные о лобби.
   useEffect(() => {
-    const fetchLobbyData = async () => {
+    // 1. Функция для первоначальной загрузки данных
+    const fetchInitialLobbyData = async () => {
       try {
-        const response = await fetch(`/api/lobbies/${lobbyId}`);
-        if (response.ok) {
-          const data = await response.json();
-          setLobby(data);
-        } else {
-          setLobby(null);
-        }
+        const response = await axios.get(`/api/lobbies/${lobbyId}`);
+        setLobby(response.data);
       } catch (error) {
-        console.error("Ошибка при загрузке данных лобби:", error);
-        setLobby(null);
+        console.error("Не удалось загрузить лобби:", error);
+        toast.error("Лобби не найдено или удалено.");
+        navigate('/lobby'); // Если лобби нет, возвращаем пользователя
       } finally {
-        if (isLoading) setIsLoading(false);
+        setIsLoading(false);
       }
     };
 
-    fetchLobbyData(); // Вызов при первой загрузке
-    const intervalId = setInterval(fetchLobbyData, 3000); // Повторять каждые 3 секунды
+    fetchInitialLobbyData(); // Вызываем её сразу
 
-    return () => clearInterval(intervalId); // Очистка при уходе
-  }, [lobbyId, isLoading]);
+    // 2. Устанавливаем соединение через WebSocket для обновлений в реальном времени
+    const socket = io("http://localhost:5000");
+
+    socket.on('connect', () => {
+      console.log('🔌 WebSocket Connected!', socket.id);
+      socket.emit('joinLobbyRoom', lobbyId); // Сообщаем серверу, к какой "комнате" мы хотим присоединиться
+    });
+
+    // 3. Слушаем событие 'lobbyUpdated' от сервера
+    socket.on('lobbyUpdated', (updatedLobbyData) => {
+      console.log("Получено обновление лобби через WebSocket:", updatedLobbyData);
+      setLobby(updatedLobbyData); // Обновляем состояние новыми данными
+    });
+    
+    socket.on('disconnect', () => {
+      console.log('❌ WebSocket Disconnected');
+    });
+
+    // 4. Очистка при уходе со страницы
+    return () => {
+      socket.disconnect();
+    };
+  }, [lobbyId, navigate]); // Зависимость только от lobbyId
 
 
   // --- 2. useEffect: РЕАГИРУЮЩИЙ НА ИЗМЕНЕНИЯ ---

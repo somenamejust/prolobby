@@ -91,6 +91,11 @@ router.put('/:id/join', async (req, res) => {
     lobby.markModified('slots');
     
     const updatedLobby = await lobby.save();
+
+        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
+    const io = req.app.get('socketio'); // Получаем io из app
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+
     res.status(200).json(updatedLobby);
 
   } catch (error) {
@@ -113,32 +118,54 @@ router.put('/:id/leave', async (req, res) => {
       return res.status(200).json({ message: "Lobby no longer exists." });
     }
 
-    // --- 👇 DIAGNOSTIC "SPY" LOG 👇 ---
-    console.log('--- CHECKING DELETE CONDITIONS ---');
-    console.log('Lobby Host ID:', lobby.host.id, '| Type:', typeof lobby.host.id);
-    console.log('Leaving User ID:', userId, '| Type:', typeof userId);
-    
     const isHostLeaving = String(lobby.host.id) === String(userId);
-    console.log('Is Host Leaving?:', isHostLeaving);
 
-    const playersAfterLeave = lobby.slots.filter(s => s.user && s.user.id !== userId);
-    const isLobbyEmpty = playersAfterLeave.length === 0 && lobby.spectators.length === 0;
-    console.log('Will Lobby Be Empty?:', isLobbyEmpty);
-    console.log('---------------------------------');
-    // --- End of Log ---
+    // --- 👇 FINAL CORRECTED LOGIC 👇 ---
 
-    if (isHostLeaving || isLobbyEmpty) {
+    // 1. If the host is leaving, delete the lobby immediately.
+    if (isHostLeaving) {
       await Lobby.deleteOne({ id: lobbyId });
-      console.log(`[Auto-Delete] Lobby ${lobbyId} deleted.`);
-      return res.status(200).json({ message: "Lobby successfully deleted." });
-    } else {
-      // If not deleting, just update the lobby state
-      lobby.slots = playersAfterLeave;
-      lobby.players = playersAfterLeave.length;
+      console.log(`[Auto-Delete] Lobby ${lobbyId} deleted because the host left.`);
+      // Also emit an event so the frontend knows the lobby is gone
+      const io = req.app.get('socketio');
+      io.in(lobbyId).emit('lobbyDeleted'); 
+      return res.status(200).json({ message: "Lobby deleted because host left." });
+    }
+
+    // 2. If a regular player is leaving, use .map() to vacate their slot.
+    let playerWasFound = false;
+    lobby.slots = lobby.slots.map(slot => {
+      if (slot.user?.id === userId) {
+        playerWasFound = true;
+        return { ...slot, user: null }; // Return the same slot but with user as null
+      }
+      return slot; // Return all other slots unchanged
+    });
+    
+    // 3. Check if the lobby is now empty.
+    const finalPlayerCount = lobby.slots.filter(s => s.user).length;
+    if (finalPlayerCount === 0) {
+      await Lobby.deleteOne({ id: lobbyId });
+      console.log(`[Auto-Delete] Lobby ${lobbyId} deleted because it became empty.`);
+      const io = req.app.get('socketio');
+      io.in(lobbyId).emit('lobbyDeleted');
+      return res.status(200).json({ message: "Lobby deleted because it was empty." });
+    }
+
+    // 4. If the lobby is not empty, save the changes.
+    if (playerWasFound) {
+      lobby.players = finalPlayerCount;
       lobby.markModified('slots');
       const updatedLobby = await lobby.save();
+
+      // Emit the update to all clients in the room
+      const io = req.app.get('socketio');
+      io.in(lobbyId).emit('lobbyUpdated', updatedLobby);
+      
       return res.status(200).json(updatedLobby);
     }
+
+    return res.status(404).json({ message: "User not found in lobby slots." });
 
   } catch (error) {
     console.error("Error on server when leaving lobby:", error);
@@ -188,6 +215,11 @@ router.put('/:id/occupy', async (req, res) => {
     lobby.markModified('spectators');
 
     const updatedLobby = await lobby.save();
+
+        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
+    const io = req.app.get('socketio'); // Получаем io из app
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+
     res.status(200).json(updatedLobby);
 
   } catch (error) {
@@ -222,6 +254,11 @@ router.put('/:id/vacate', async (req, res) => {
     lobby.markModified('spectators');
 
     const updatedLobby = await lobby.save();
+
+        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
+    const io = req.app.get('socketio'); // Получаем io из app
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+
     res.status(200).json(updatedLobby);
 
   } catch (error) {
@@ -274,6 +311,11 @@ router.put('/:id/ready', async (req, res) => {
     lobby.markModified('slots'); // Помечаем массив как измененный
 
     const updatedLobby = await lobby.save();
+
+        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
+    const io = req.app.get('socketio'); // Получаем io из app
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+
     res.status(200).json(updatedLobby);
 
   } catch (error) {
@@ -322,6 +364,11 @@ router.put('/:id/kick', async (req, res) => {
     }
 
     const updatedLobby = await lobby.save();
+
+        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
+    const io = req.app.get('socketio'); // Получаем io из app
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+
     res.status(200).json(updatedLobby);
 
   } catch (error) {
@@ -355,6 +402,11 @@ router.put('/:id/start', async (req, res) => {
     lobby.countdownStartTime = null; // Clear the timer just in case
 
     const updatedLobby = await lobby.save();
+
+        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
+    const io = req.app.get('socketio'); // Получаем io из app
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+
     res.status(200).json(updatedLobby);
 
   } catch (error)
@@ -391,6 +443,11 @@ router.post('/:id/chat', async (req, res) => {
     lobby.markModified('chat');
 
     const updatedLobby = await lobby.save();
+
+        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
+    const io = req.app.get('socketio'); // Получаем io из app
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+
     res.status(200).json(updatedLobby);
 
   } catch (error) {

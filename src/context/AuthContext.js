@@ -107,7 +107,6 @@ export const AuthProvider = ({ children }) => {
   const praiseUser = async (targetUser) => {
     try {
       await axios.post('/api/users/praise', { targetUserId: targetUser.id });
-      toast.success(`Вы похвалили ${targetUser.username}`);
     } catch (error) {
       toast.error("Не удалось похвалить пользователя.");
     }
