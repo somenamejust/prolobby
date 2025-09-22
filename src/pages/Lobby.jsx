@@ -80,25 +80,28 @@ export default function Lobby() {
     });
   };
 
-  const handleJoinAction = async (lobbyId) => {
-    if (!user) {
-      toast.error("Пожалуйста, войдите в аккаунт, чтобы присоединиться.");
-      navigate('/login');
-      return;
-    }
-    
-    try {
-      await axios.put(`/api/lobbies/${lobbyId}/join`, { user });
+  const handleJoinAction = async (lobbyId, isSpectator = false) => {
+      if (!user) {
+        toast.error("Please log in to join a lobby.");
+        navigate('/login');
+        return;
+      }
       
-      // Сервер дал добро, обновляем сессию и переходим в лобби
-      joinLobbySession(lobbyId);
-      navigate(`/lobby/${lobbyId}`);
+      try {
+        // The API call remains the same
+        await axios.put(`/api/lobbies/${lobbyId}/join`, { user, isSpectator });
+        
+        // --- 👇 THE FIX IS HERE 👇 ---
+        // We now call joinLobbySession for EVERYONE who joins,
+        // ensuring user.currentLobbyId is always set correctly.
+        joinLobbySession(lobbyId);
+        
+        navigate(`/lobby/${lobbyId}`);
 
-    } catch (error) {
-      // Сервер вернул ошибку (например, "лобби полное", "недостаточно средств"), показываем её
-      console.error("Не удалось войти в лобби:", error);
-      toast.error(error.response?.data?.message || "Произошла ошибка при входе");
-    }
+      } catch (error) {
+        console.error("Failed to join lobby:", error);
+        toast.error(error.response?.data?.message || "An error occurred.");
+      }
   };
 
   const handleCreateSubmit = async (e) => {
@@ -331,7 +334,7 @@ export default function Lobby() {
           </div>
 
           {filteredLobbies.map((l) => (
-            <div key={l.id} className="cursor-pointer" onClick={() => navigate(`/lobby/${l.id}`)}>
+            <div key={l.id} className="cursor-pointer" onClick={() => handleJoinAction(l.id, true)}>
               {/* --- 👇 СТРОКА ЛОББИ С НОВЫМИ КЛАССАМИ 👇 --- */}
               <div 
                 className="grid gap-4 items-center py-4 px-2 border-b border-gray-800 hover:bg-gray-700/50 transition-colors"
@@ -345,7 +348,7 @@ export default function Lobby() {
                 <div className="text-gray-300 text-center">{l.players}/{l.maxPlayers}</div>
                 <div className="text-gray-300 text-center">{(l.spectators || []).length}</div>
                 <div className="flex justify-center">
-                  <button onClick={(e) => { e.stopPropagation(); handleJoinAction(l.id); }} className="px-3 py-2 bg-brand-green hover:bg-green-400 text-white rounded-md text-sm z-10 relative transition-colors">
+                  <button onClick={(e) => { e.stopPropagation(); handleJoinAction(l.id, false); }} className="px-3 py-2 bg-brand-green hover:bg-green-400 text-white rounded-md text-sm z-10 relative transition-colors">
                     ${l.entryFee}
                   </button>
                 </div>

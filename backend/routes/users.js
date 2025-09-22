@@ -194,4 +194,64 @@ router.post('/report', async (req, res) => {
     }
 });
 
+router.post('/deposit', async (req, res) => {
+    try {
+        const { userId, amount } = req.body;
+        const amountNumber = parseFloat(amount);
+
+        if (!userId || isNaN(amountNumber) || amountNumber <= 0) {
+            return res.status(400).json({ message: "Некорректные данные для пополнения." });
+        }
+
+        // Находим пользователя и увеличиваем его баланс
+        // { new: true } говорит Mongoose вернуть обновленный документ
+        const updatedUser = await User.findOneAndUpdate(
+            { id: userId }, 
+            { $inc: { balance: amountNumber } },
+            { new: true }
+        );
+
+        if (!updatedUser) {
+            return res.status(404).json({ message: "Пользователь не найден." });
+        }
+
+        res.status(200).json(updatedUser);
+
+    } catch (error) {
+        console.error("Ошибка при пополнении баланса:", error);
+        res.status(500).json({ message: 'Ошибка сервера' });
+    }
+});
+
+router.post('/withdraw', async (req, res) => {
+    try {
+        const { userId, amount } = req.body;
+        const amountNumber = parseFloat(amount);
+
+        if (!userId || isNaN(amountNumber) || amountNumber <= 0) {
+            return res.status(400).json({ message: "Некорректные данные для вывода." });
+        }
+
+        const user = await User.findOne({ id: userId });
+        if (!user) {
+            return res.status(404).json({ message: "Пользователь не найден." });
+        }
+
+        // Проверяем, достаточно ли средств
+        if (user.balance < amountNumber) {
+            return res.status(400).json({ message: "Недостаточно средств на балансе." });
+        }
+
+        // Списываем средства
+        user.balance -= amountNumber;
+        const updatedUser = await user.save();
+
+        res.status(200).json(updatedUser);
+
+    } catch (error) {
+        console.error("Ошибка при выводе средств:", error);
+        res.status(500).json({ message: 'Ошибка сервера' });
+    }
+});
+
 module.exports = router;

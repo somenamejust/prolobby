@@ -129,34 +129,56 @@ export const AuthProvider = ({ children }) => {
     });
   };
 
-const leaveLobbySession = async () => {
-  // 👇 ДОБАВЛЕНЫ ПОДРОБНЫЕ ЛОГИ 👇
-  console.log('[AuthContext.js] Запущена функция leaveLobbySession.');
-  console.log('[AuthContext.js] Текущий объект user:', user);
-  console.log('[AuthContext.js] ID текущего лобби в сессии:', user?.currentLobbyId);
+  const leaveLobbySession = async () => {
+    // 👇 ДОБАВЛЕНЫ ПОДРОБНЫЕ ЛОГИ 👇
+    console.log('[AuthContext.js] Запущена функция leaveLobbySession.');
+    console.log('[AuthContext.js] Текущий объект user:', user);
+    console.log('[AuthContext.js] ID текущего лобби в сессии:', user?.currentLobbyId);
 
-  if (!user || !user.currentLobbyId) {
-    console.error('[AuthContext.js] ВЫХОД ПРЕРВАН: нет пользователя или ID лобби в сессии.');
-    return;
-  }
+    if (!user || !user.currentLobbyId) {
+      console.error('[AuthContext.js] ВЫХОД ПРЕРВАН: нет пользователя или ID лобби в сессии.');
+      return;
+    }
 
-  const lobbyId = user.currentLobbyId;
-  const userId = user.id;
+    const lobbyId = user.currentLobbyId;
+    const userId = user.id;
 
-  try {
-    console.log(`[AuthContext.js] Отправляю PUT запрос на /api/lobbies/${lobbyId}/leave`);
-    await axios.put(`/api/lobbies/${lobbyId}/leave`, { userId });
+    try {
+      console.log(`[AuthContext.js] Отправляю PUT запрос на /api/lobbies/${lobbyId}/leave`);
+      await axios.put(`/api/lobbies/${lobbyId}/leave`, { userId });
 
-    // После успешного выхода на сервере, обновляем состояние на клиенте
-    setUser(currentUser => {
-      const updatedUser = { ...currentUser, currentLobbyId: null };
-      updateUserInStorage(updatedUser);
-      return updatedUser;
-    });
-  } catch (error) {
-    console.error("Не удалось выйти из лобби (ошибка axios):", error);
-  }
-};
+      // После успешного выхода на сервере, обновляем состояние на клиенте
+      setUser(currentUser => {
+        const updatedUser = { ...currentUser, currentLobbyId: null };
+        updateUserInStorage(updatedUser);
+        return updatedUser;
+      });
+    } catch (error) {
+      console.error("Не удалось выйти из лобби (ошибка axios):", error);
+    }
+  };
+
+  // 🎯 НОВАЯ ФУНКЦИЯ: ПОПОЛНЕНИЕ БАЛАНСА
+  const depositBalance = async (amount) => {
+    try {
+      await axios.post('/api/users/deposit', { userId: user.id, amount });
+      await refreshUser(); // Обновляем данные пользователя, чтобы увидеть новый баланс
+      toast.success(`Баланс успешно пополнен на ${amount}$`);
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Ошибка при пополнении.");
+    }
+  };
+
+  // 🎯 НОВАЯ ФУНКЦИЯ: ВЫВОД СРЕДСТВ
+  const withdrawBalance = async (amount) => {
+    try {
+      await axios.post('/api/users/withdraw', { userId: user.id, amount });
+      await refreshUser(); // Обновляем данные, чтобы увидеть новый баланс
+      toast.success(`Вы успешно вывели ${amount}$`);
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Ошибка при выводе средств.");
+    }
+  };
 
   return (
     <AuthContext.Provider value={{ 
@@ -171,7 +193,9 @@ const leaveLobbySession = async () => {
       declineFriendRequest,
       removeFriend,
       praiseUser, 
-      reportUser
+      reportUser,
+      depositBalance,
+      withdrawBalance
     }}>
       {children}
     </AuthContext.Provider>

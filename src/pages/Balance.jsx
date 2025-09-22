@@ -20,7 +20,6 @@ export default function BalancePage() {
     e.preventDefault();
     const amount = parseFloat(withdrawAmount);
     if (isNaN(amount) || amount <= 0) { setError('Введите корректную сумму'); return; }
-    if (amount > (user.balance || 0)) { setError('Недостаточно средств'); return; }
     withdrawBalance(amount);
     setWithdrawAmount('');
     setError('');

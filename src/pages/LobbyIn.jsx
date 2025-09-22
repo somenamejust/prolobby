@@ -48,92 +48,111 @@ export default function LobbyIn() {
   const [chatMessage, setChatMessage] = useState('');
   const [modalUser, setModalUser] = useState(null);
   const [timer, setTimer] = useState(null);
-  const [menuData, setMenuData] = useState({ targetUser: null, position: null });
   
+  const [menuData, setMenuData] = useState({ targetUser: null, position: null });
   const dropdownRef = useRef(null);
+  
   const chatContainerRef = useRef(null);
+  const socketRef = useRef(null);
 
   // --- 2. ЭФФЕКТЫ ---
-  // --- 1. useEffect: ЗАГРУЗЧИК ДАННЫХ ---
-  // Его единственная задача - постоянно получать свежие данные о лобби.
+  // --- 1. useEffect: ТОЛЬКО ДЛЯ ПЕРВОНАЧАЛЬНОЙ ЗАГРУЗКИ ДАННЫХ ---
   useEffect(() => {
-    // 1. Функция для первоначальной загрузки данных
+    let isMounted = true;
     const fetchInitialLobbyData = async () => {
       try {
         const response = await axios.get(`/api/lobbies/${lobbyId}`);
-        setLobby(response.data);
+        if (isMounted) setLobby(response.data);
       } catch (error) {
-        console.error("Не удалось загрузить лобби:", error);
-        toast.error("Лобби не найдено или удалено.");
-        navigate('/lobby'); // Если лобби нет, возвращаем пользователя
+        if (isMounted) {
+          toast.error("Лобби не найдено или было удалено.");
+          navigate('/lobby');
+        }
       } finally {
-        setIsLoading(false);
+        if (isMounted) setIsLoading(false);
       }
     };
+    fetchInitialLobbyData();
+    return () => { isMounted = false; };
+  }, [lobbyId, navigate]);
 
-    fetchInitialLobbyData(); // Вызываем её сразу
+  // --- 2. useEffect: ТОЛЬКО ДЛЯ УПРАВЛЕНИЯ WEBSOCKET ---
+  useEffect(() => {
+    if (!lobbyId || !user) return; // Ждём, пока загрузится и лобби, и юзер
 
-    // 2. Устанавливаем соединение через WebSocket для обновлений в реальном времени
     const socket = io("http://localhost:5000");
+    socketRef.current = socket;
 
-    socket.on('connect', () => {
-      console.log('🔌 WebSocket Connected!', socket.id);
-      socket.emit('joinLobbyRoom', lobbyId); // Сообщаем серверу, к какой "комнате" мы хотим присоединиться
-    });
+    const handleConnect = () => {
+      socket.emit('joinLobbyRoom', lobbyId);
+      socket.emit('registerUser', user.id); // Сообщаем серверу наш ID
+    };
+    const handleLobbyUpdate = (updatedLobbyData) => setLobby(updatedLobbyData);
+    const handleLobbyDeleted = (data) => {
+      toast.error(data.message);
+      leaveLobbySession();
+      navigate('/lobby');
+    };
+    // --- 👇 НОВЫЙ ОБРАБОТЧИК КИКА 👇 ---
+    const handleYouWereKicked = (data) => {
+      toast.error(data.message);
+      leaveLobbySession();
+      navigate('/lobby');
+    };
 
-    // 3. Слушаем событие 'lobbyUpdated' от сервера
-    socket.on('lobbyUpdated', (updatedLobbyData) => {
-      console.log("Получено обновление лобби через WebSocket:", updatedLobbyData);
-      setLobby(updatedLobbyData); // Обновляем состояние новыми данными
-    });
-    
-    socket.on('disconnect', () => {
-      console.log('❌ WebSocket Disconnected');
-    });
+    socket.on('connect', handleConnect);
+    socket.on('lobbyUpdated', handleLobbyUpdate);
+    socket.on('lobbyDeleted', handleLobbyDeleted);
+    socket.on('youWereKicked', handleYouWereKicked); // <-- Подписываемся на новое событие
 
-    // 4. Очистка при уходе со страницы
     return () => {
+      socket.off('connect', handleConnect);
+      socket.off('lobbyUpdated', handleLobbyUpdate);
+      socket.off('lobbyDeleted', handleLobbyDeleted);
+      socket.off('youWereKicked', handleYouWereKicked); // <-- Отписываемся
       socket.disconnect();
     };
-  }, [lobbyId, navigate]); // Зависимость только от lobbyId
+  }, [lobbyId, user, navigate, leaveLobbySession]);
 
-
-  // --- 2. useEffect: РЕАГИРУЮЩИЙ НА ИЗМЕНЕНИЯ ---
-  // Этот эффект следит за состоянием `lobby` и решает, нужно ли перенаправлять пользователя.
+  // --- 3. useEffect: Этот эффект следит за состоянием `lobby` и решает, нужно ли перенаправлять пользователя.
   useEffect(() => {
-    // Не делать ничего, если лобби еще не загрузилось или мы уже в процессе перенаправления
-    if (!lobby || isRedirecting) return;
+      // Этот эффект теперь отвечает ТОЛЬКО за редирект после завершения игры.
+      if (!lobby || isRedirecting || lobby.status !== 'finished') return;
 
-    // Сценарий 1: Игра завершена. Это сработает для ВСЕХ игроков.
-    if (lobby.status === 'finished') {
-      setIsRedirecting(true); // Включаем флаг, чтобы избежать повторного срабатывания
+      setIsRedirecting(true);
       toast.success("Игра завершена. Возвращение в лобби...");
       
       refreshUser().then(() => {
-        setTimeout(() => {
-          leaveLobbySession();
-          navigate('/lobby');
-        }, 4000);
+          setTimeout(() => {
+              leaveLobbySession();
+              navigate('/lobby');
+          }, 4000);
       });
-      return; // Выходим, чтобы не проверять другие условия
-    }
+  }, [lobby, isRedirecting, navigate, leaveLobbySession, refreshUser]);
 
-    // Сценарий 2: Игрока кикнули.
-    if (user) {
-      const amIInSlots = lobby.slots.some(slot => slot.user?.id === user.id);
-      const amIInSpectators = lobby.spectators.some(spec => spec.id === user.id);
-      
-      // Если меня нет ни в слотах, ни в зрителях, но я "думал", что я в этом лобби
-      if (!amIInSlots && !amIInSpectators && String(user.currentLobbyId) === String(lobbyId)) {
-        setIsRedirecting(true);
-        toast.error("Хост исключил вас из лобби.");
-        leaveLobbySession();
-        navigate('/lobby');
+  // --- 4. useEffect: эффект для МЕНЮ
+  useEffect(() => {
+    // Эта функция будет вызываться при любом клике на странице
+    const handleClickOutside = (event) => {
+      // Проверяем, есть ли ref у нашего меню И был ли клик сделан ВНЕ этого меню
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        // Если да - закрываем меню
+        setMenuData({ targetUser: null, position: null });
       }
-    }
-  }, [lobby, user, lobbyId, isRedirecting, navigate, leaveLobbySession, refreshUser]);
+    };
 
-  // --- 3. useEffect: ТАЙМЕР ---
+    // Добавляем "слушателя" на документ, только если меню открыто
+    if (menuData.targetUser) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    // Функция очистки: убираем "слушателя", когда компонент "умирает" или меню закрывается
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [menuData]); // Этот эффект будет перезапускаться каждый раз, когда меняется menuData
+
+  // --- 5. useEffect: ТАЙМЕР ---
   useEffect(() => {
     if (lobby?.status !== 'countdown' || !lobby.countdownStartTime) {
       setTimer(null);
@@ -186,46 +205,33 @@ export default function LobbyIn() {
   };
 
   const handleOccupySlot = async (slotToOccupy) => {
-    if (!user || !lobby) return;
+      if (!user || !lobby) return;
 
-    try {
-      const response = await fetch(`/api/lobbies/${lobby.id}/occupy`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          userId: user.id, 
-          slot: { team: slotToOccupy.team, position: slotToOccupy.position } 
-        }),
-      });
+      try {
+          const payload = { 
+              userId: user.id, 
+              slot: { team: slotToOccupy.team, position: slotToOccupy.position } 
+          };
+          const response = await axios.put(`/api/lobbies/${lobby.id}/occupy`, payload);
 
-      const updatedLobby = await response.json();
+          // With axios, the updated lobby is in response.data
+          // No need to check response.ok, axios does it for you
+          setLobby(response.data); 
 
-      if (!response.ok) {
-        throw new Error(updatedLobby.message || "Не удалось занять слот");
+      } catch (error) {
+          console.error("Ошибка при попытке занять слот:", error);
+          // Axios puts server error messages in error.response.data.message
+          toast.error(error.response?.data?.message || "Не удалось занять слот");
       }
-
-      setLobby(updatedLobby); // Обновляем состояние лобби
-
-    } catch (error) {
-      console.error("Ошибка при попытке занять слот:", error);
-      toast.error(error.message);
-    }
   };
 
   const handleLeaveLobby = async () => {
     if (!user || !lobby) return;
-
     try {
-      // Call the already-refactored function from AuthContext.
-      // This is the function that sends the request to your backend.
       await leaveLobbySession();
-      
-      // After the backend confirms the exit and deletes the lobby, navigate the user away.
       navigate('/lobby');
       toast.success("Вы покинули лобби.");
-
     } catch (error) {
-      console.error("Ошибка при выходе из лобби:", error);
       toast.error("Не удалось покинуть лобби.");
     }
   };
@@ -234,188 +240,127 @@ export default function LobbyIn() {
     if (!user || !lobby) return;
 
     try {
-      const response = await fetch(`/api/lobbies/${lobby.id}/vacate`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id }),
-      });
-
-      const updatedLobby = await response.json();
-
-      if (!response.ok) {
-        throw new Error(updatedLobby.message || "Не удалось освободить слот");
-      }
-
-      setLobby(updatedLobby); // Обновляем состояние
+        const response = await axios.put(`/api/lobbies/${lobby.id}/vacate`, { userId: user.id });
+          
+        setLobby(response.data);
 
     } catch (error) {
-      console.error("Ошибка при освобождении слота:", error);
-      toast.error(error.message);
+        console.error("Ошибка при освобождении слота:", error);
+        toast.error(error.response?.data?.message || "Не удалось освободить слот");
     }
   };
 
   const handleReadyToggle = async () => {
-    if (!lobby || !user) return;
-
     try {
-      const response = await fetch(`/api/lobbies/${lobby.id}/ready`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id }),
-      });
-
-      const updatedLobby = await response.json();
-
-      if (!response.ok) {
-        throw new Error(updatedLobby.message || "Не удалось изменить статус");
-      }
-
-      // Мгновенно обновляем состояние лобби данными с сервера
-      setLobby(updatedLobby);
-
+      // Все запросы теперь используют axios
+      const response = await axios.put(`/api/lobbies/${lobby.id}/ready`, { userId: user.id });
+      setLobby(response.data); // Оптимистичное обновление больше не нужно, WebSocket сделает это за нас
     } catch (error) {
-      console.error("Ошибка при смене статуса:", error);
-      toast.error(error.message || "Не удалось изменить статус");
+      toast.error(error.response?.data?.message || "Не удалось изменить статус");
     }
   };
 
   const handleStartGame = async () => {
-    // Client-side check for better UX
-    if (!user || !lobby || user.email !== lobby.host.email) {
-      toast.error("Only the host can start the game.");
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/lobbies/${lobby.id}/start`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hostId: user.id }),
-      });
-
-      const updatedLobby = await response.json();
-
-      if (!response.ok) {
-        throw new Error(updatedLobby.message || "Failed to start the game");
+      if (!user || !lobby || user.email !== lobby.host.email) {
+          toast.error("Only the host can start the game.");
+          return;
       }
 
-      // Update the local state with the authoritative response from the server
-      setLobby(updatedLobby);
-      toast.success("The game has started!");
+      try {
+          const response = await axios.put(`/api/lobbies/${lobby.id}/start`, { hostId: user.id });
+          
+          setLobby(response.data);
+          toast.success("The game has started!");
 
-    } catch (error) {
-      console.error("Error starting game:", error);
-      toast.error(error.message);
-    }
+      } catch (error) {
+          console.error("Error starting game:", error);
+          toast.error(error.response?.data?.message || "Failed to start the game");
+      }
   };
 
   const handleDeclareWinner = async (winningTeam) => {
       if (!user || !lobby || user.email !== lobby.host.email) return;
 
       try {
-        const response = await fetch(`/api/lobbies/${lobby.id}/declare-winner`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            hostId: user.id, 
-            winningTeam: winningTeam 
-          }),
-        });
+          const payload = { 
+              hostId: user.id, 
+              winningTeam: winningTeam 
+          };
+          const response = await axios.post(`/api/lobbies/${lobby.id}/declare-winner`, payload);
 
-      const result = await response.json();
+          // The toast now uses the message directly from the server's response
+          toast.success(response.data.message);
+          
+          // The redirection logic remains in the useEffect hook, so we don't need to do anything else here.
 
-      if (!response.ok) {
-        throw new Error(result.message || "Не удалось завершить игру");
+      } catch (error) {
+          console.error("Ошибка при завершении игры:", error);
+          toast.error(error.response?.data?.message || "Не удалось завершить игру");
       }
-
-      // --- 👇 ИЗМЕНЕНИЕ ЗДЕСЬ 👇 ---
-      // Мы больше НЕ вызываем navigate и setTimeout здесь.
-      // Мы просто показываем уведомление. Обновление статуса лобби
-      // и последующий редирект произойдут автоматически через useEffect.
-      toast.success(result.message);
-
-    } catch (error) {
-      console.error("Ошибка при завершении игры:", error);
-      toast.error(error.message);
-    }
   };
 
-  const handleSendMessage = async (e) => {
+  const handleSendMessage = (e) => {
     e.preventDefault();
-    if (!chatMessage.trim() || !user || !lobby) return;
+    if (!chatMessage.trim() || !user || !lobby || !socketRef.current) return;
 
-    // Оптимистичное обновление: сначала обновляем UI, потом отправляем запрос
-    // Это создает ощущение мгновенной отправки
+    // --- 👇 ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ 👇 ---
+
+    // 1. Создаем объект нового сообщения для немедленного отображения
     const newMessage = {
-      user: { id: user.id, username: user.username, avatarUrl: user.avatarUrl },
+      user: { 
+        id: user.id, 
+        username: user.username, 
+        avatarUrl: user.avatarUrl 
+      },
       message: chatMessage,
-      timestamp: new Date()
+      timestamp: new Date().toISOString() // Используем стандартный формат времени
     };
+
+    // 2. ОПТИМИСТИЧНО обновляем локальное состояние. 
+    //    Ваше сообщение мгновенно появится на экране.
     setLobby(prevLobby => ({
       ...prevLobby,
       chat: [...prevLobby.chat, newMessage]
     }));
-    setChatMessage(''); // Сразу очищаем поле ввода
 
-    try {
-      const response = await fetch(`/api/lobbies/${lobby.id}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user, message: chatMessage }),
-      });
+    // 3. Отправляем данные на сервер в фоновом режиме
+    socketRef.current.emit('sendChatMessage', {
+      lobbyId: lobby.id,
+      user: newMessage.user,
+      message: newMessage.message
+    });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message || "Не удалось отправить сообщение");
-      }
-      
-      // Заменяем "временное" сообщение на точное от сервера,
-      // чтобы все данные были синхронизированы.
-      setLobby(data);
-
-    } catch (error) {
-      console.error("Ошибка при отправке сообщения:", error);
-      toast.error(error.message);
-      // Здесь можно добавить логику отката оптимистичного обновления, если нужно
-    }
+    // 4. Сразу очищаем поле ввода
+    setChatMessage('');
   };
 
   const handleKickPlayer = async (userToKick) => {
-    // Проверка, что текущий пользователь - хост (для быстрой реакции интерфейса)
-    if (!user || !lobby || user.email !== lobby.host.email) {
-      toast.error("Только хост может выполнять это действие.");
-      return;
-    }
-
-    if (!window.confirm(`Вы уверены, что хотите выгнать ${userToKick.username} из лобби?`)) {
-        return;
-    }
-
-    try {
-      const response = await fetch(`/api/lobbies/${lobby.id}/kick`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          userIdToKick: userToKick.id,
-          hostId: user.id // Отправляем ID хоста для проверки на бэкенде
-        }),
-      });
-
-      const updatedLobby = await response.json();
-
-      if (!response.ok) {
-        throw new Error(updatedLobby.message || "Не удалось кикнуть игрока");
+      if (!user || !lobby || user.email !== lobby.host.email) {
+          toast.error("Только хост может выполнять это действие.");
+          return;
       }
 
-      // Обновляем состояние лобби на клиенте данными с сервера
-      setLobby(updatedLobby);
-      toast.success(`Игрок ${userToKick.username} был исключён.`);
+      if (!window.confirm(`Вы уверены, что хотите выгнать ${userToKick.username} из лобби?`)) {
+          return;
+      }
 
-    } catch (error) {
-      console.error("Ошибка при кике игрока:", error);
-      toast.error(error.message);
-    }
+      try {
+          const payload = { 
+              userIdToKick: userToKick.id,
+              hostId: user.id
+          };
+          const response = await axios.put(`/api/lobbies/${lobby.id}/kick`, payload);
+
+          // No need to call setLobby here, the WebSocket update will handle it.
+          // But you can leave it for instant feedback if you prefer.
+          // setLobby(response.data);
+          
+          toast.success(`Игрок ${userToKick.username} был исключён.`);
+
+      } catch (error) {
+          console.error("Ошибка при кике игрока:", error);
+          toast.error(error.response?.data?.message || "Не удалось кикнуть игрока");
+      }
   };
 
   const hostWinnerControls = (

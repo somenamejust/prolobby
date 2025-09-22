@@ -42,133 +42,138 @@ router.post('/', async (req, res) => {
   }
 });
 
-// --- 👇 ИСПРАВЛЕННЫЙ МАРШРУТ ДЛЯ ВХОДА В ЛОББИ 👇 ---
 router.put('/:id/join', async (req, res) => {
   try {
     const lobbyId = req.params.id;
-    const { user: userFromRequest } = req.body;
+    const { user: userFromRequest, isSpectator } = req.body;
+    const io = req.app.get('socketio');
+
+    console.log('[Бэкенд] Получен следующий объект userFromRequest:', userFromRequest);
     
-    if (!userFromRequest || !userFromRequest.id) {
-      return res.status(400).json({ message: 'Некорректные данные пользователя' });
+    if (!userFromRequest?.id) {
+      return res.status(400).json({ message: 'User data is incorrect' });
     }
 
     const lobby = await Lobby.findOne({ id: lobbyId });
     if (!lobby) {
-      return res.status(404).json({ message: 'Лобби не найдено' });
+      return res.status(404).json({ message: 'Lobby not found' });
     }
 
-    // --- All other checks are correct ---
-    if (lobby.bannedUsers && lobby.bannedUsers.includes(String(userFromRequest.id))) {
-      return res.status(403).json({ message: "Вы были исключены из этого лобби и не можете войти снова." });
-    }
-    const isAlreadyInSlot = lobby.slots.some(slot => slot.user?.id === userFromRequest.id);
-    if (isAlreadyInSlot) {
-      return res.status(200).json(lobby);
+    if (lobby.bannedUsers?.includes(String(userFromRequest.id))) {
+      return res.status(403).json({ message: "Вы были исключены из этого лобби." });
     }
 
-    // --- 👇 CORRECTED LOGIC 👇 ---
+    const fullUser = await User.findById(userFromRequest._id);
+    if (!fullUser) return res.status(404).json({ message: 'User not found in DB' });
 
-    // 1. Find the index of the first free slot
-    const freeSlotIndex = lobby.slots.findIndex(slot => !slot.user);
+    if (isSpectator) {
+      if (!lobby.spectators.some(spec => String(spec._id) === String(fullUser._id))) {
+        lobby.spectators.push(fullUser);
+        lobby.markModified('spectators');
+      }
+    } else {
+      // --- 👇 FINAL FIX IS HERE 👇 ---
+      // SCENARIO 2: User wants to join as a player
 
-    // 2. If no free slot is found (findIndex returns -1), THEN send the error
-    if (freeSlotIndex === -1) {
-      return res.status(400).json({ message: 'Лобби уже заполнено' });
+      // 1. FIRST, check for bans and if the user is already in a slot.
+      if (lobby.bannedUsers?.includes(String(userFromRequest.id))) {
+        return res.status(403).json({ message: "You have been banned from this lobby." });
+      }
+      if (lobby.slots.some(slot => slot.user?.id === userFromRequest.id)) {
+        return res.status(200).json(lobby.toObject());
+      }
+
+      // 2. SECOND, check if the lobby is full.
+      const freeSlotIndex = lobby.slots.findIndex(slot => !slot.user);
+      if (freeSlotIndex === -1) {
+        return res.status(400).json({ message: 'Lobby is full' });
+      }
+
+      // 3. THIRD, check the user's balance BEFORE adding them.
+      const userForCheck = await User.findOne({ id: userFromRequest.id });
+      if (!userForCheck || userForCheck.balance < lobby.entryFee) {
+          return res.status(403).json({ message: "You do not have enough funds to join." });
+      }
+
+      // 4. FINALLY, if all checks pass, add the user to the slot.
+      lobby.slots[freeSlotIndex].user = { 
+        id: userFromRequest.id, _id: userFromRequest._id, email: userFromRequest.email,
+        username: userFromRequest.username, avatarUrl: userFromRequest.avatarUrl, isReady: false 
+      };
+      lobby.players = lobby.slots.filter(s => s.user).length;
+      lobby.markModified('slots');
     }
-    
-    // 3. If a slot IS found, add the user to that slot
-    lobby.slots[freeSlotIndex].user = { 
-      id: userFromRequest.id,
-      _id: userFromRequest._id,
-      email: userFromRequest.email,
-      username: userFromRequest.username,
-      avatarUrl: userFromRequest.avatarUrl,
-      isReady: false 
-    };
-
-    // 4. Update player count and save
-    lobby.players = lobby.slots.filter(s => s.user).length;
-    lobby.markModified('slots');
     
     const updatedLobby = await lobby.save();
-
-        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
-    const io = req.app.get('socketio'); // Получаем io из app
-    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
-
-    res.status(200).json(updatedLobby);
+    
+    io.in(String(lobbyId)).emit('lobbyUpdated', updatedLobby.toObject());
+    res.status(200).json(updatedLobby.toObject());
 
   } catch (error) {
-    console.error("Критическая ошибка на сервере при входе в лобби:", error);
-    res.status(500).json({ message: 'Внутренняя ошибка сервера' });
+    console.error("Error joining lobby:", error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
 router.put('/:id/leave', async (req, res) => {
   try {
-    const lobbyId = req.params.id;
     const { userId } = req.body;
+    const lobby = await Lobby.findOne({ id: req.params.id });
+    const io = req.app.get('socketio');
+    const roomName = String(req.params.id);
 
-    if (!userId) {
-      return res.status(400).json({ message: 'User ID not provided' });
-    }
-
-    const lobby = await Lobby.findOne({ id: lobbyId });
-    if (!lobby) {
-      return res.status(200).json({ message: "Lobby no longer exists." });
-    }
+    if (!lobby) return res.status(200).json({ message: "Lobby already deleted." });
 
     const isHostLeaving = String(lobby.host.id) === String(userId);
 
-    // --- 👇 FINAL CORRECTED LOGIC 👇 ---
-
-    // 1. If the host is leaving, delete the lobby immediately.
     if (isHostLeaving) {
-      await Lobby.deleteOne({ id: lobbyId });
-      console.log(`[Auto-Delete] Lobby ${lobbyId} deleted because the host left.`);
-      // Also emit an event so the frontend knows the lobby is gone
-      const io = req.app.get('socketio');
-      io.in(lobbyId).emit('lobbyDeleted'); 
-      return res.status(200).json({ message: "Lobby deleted because host left." });
+      io.in(roomName).emit('lobbyDeleted', { message: 'The host has left the lobby.' });
+      await Lobby.deleteOne({ id: req.params.id });
+      return res.status(200).json({ message: "Lobby deleted." });
     }
 
-    // 2. If a regular player is leaving, use .map() to vacate their slot.
-    let playerWasFound = false;
-    lobby.slots = lobby.slots.map(slot => {
-      if (slot.user?.id === userId) {
-        playerWasFound = true;
-        return { ...slot, user: null }; // Return the same slot but with user as null
-      }
-      return slot; // Return all other slots unchanged
-    });
+    // --- 👇 FINAL, SIMPLIFIED LOGIC 👇 ---
     
-    // 3. Check if the lobby is now empty.
+    // Get the initial number of people in the lobby
+    const initialCount = lobby.slots.filter(s => s.user).length + lobby.spectators.length;
+
+    // Remove the user from SLOTS
+    lobby.slots = lobby.slots.map(slot => {
+      if (slot.user?.id === userId) return { ...slot, user: null };
+      return slot;
+    });
+
+    // Remove the user from SPECTATORS
+    lobby.spectators = lobby.spectators.filter(spec => spec.id !== userId);
+    
+    // Get the final number of people
     const finalPlayerCount = lobby.slots.filter(s => s.user).length;
-    if (finalPlayerCount === 0) {
-      await Lobby.deleteOne({ id: lobbyId });
-      console.log(`[Auto-Delete] Lobby ${lobbyId} deleted because it became empty.`);
-      const io = req.app.get('socketio');
-      io.in(lobbyId).emit('lobbyDeleted');
-      return res.status(200).json({ message: "Lobby deleted because it was empty." });
+    const finalSpectatorCount = lobby.spectators.length;
+    const finalTotalCount = finalPlayerCount + finalSpectatorCount;
+
+    // If the number of people has not changed, the user was not found.
+    if (finalTotalCount === initialCount) {
+      return res.status(404).json({ message: "User was not found in the lobby." });
+    }
+    
+    // If the lobby is now empty, delete it.
+    if (finalTotalCount === 0) {
+      io.in(roomName).emit('lobbyDeleted', { message: 'The lobby is now empty.' });
+      await Lobby.deleteOne({ id: req.params.id });
+      return res.status(200).json({ message: "Lobby deleted." });
     }
 
-    // 4. If the lobby is not empty, save the changes.
-    if (playerWasFound) {
-      lobby.players = finalPlayerCount;
-      lobby.markModified('slots');
-      const updatedLobby = await lobby.save();
+    // Otherwise, update the lobby and broadcast the changes.
+    lobby.players = finalPlayerCount;
+    lobby.markModified('slots');
+    lobby.markModified('spectators');
+    const updatedLobby = await lobby.save();
 
-      // Emit the update to all clients in the room
-      const io = req.app.get('socketio');
-      io.in(lobbyId).emit('lobbyUpdated', updatedLobby);
-      
-      return res.status(200).json(updatedLobby);
-    }
-
-    return res.status(404).json({ message: "User not found in lobby slots." });
+    io.in(roomName).emit('lobbyUpdated', updatedLobby.toObject());
+    res.status(200).json(updatedLobby.toObject());
 
   } catch (error) {
-    console.error("Error on server when leaving lobby:", error);
+    console.error("Error leaving lobby:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -180,9 +185,10 @@ router.put('/:id/occupy', async (req, res) => {
 
     if (!lobby) return res.status(404).json({ message: "Лобби не найдено" });
 
-    // TODO: Здесь нужна проверка баланса пользователя. 
-    // Эту логику нужно будет добавить, когда у вас будет модель User на бэкенде.
-    // Пока мы её пропустим, но помним о ней.
+    const userForCheck = await User.findOne({ id: userId });
+    if (userForCheck.balance < lobby.entryFee) {
+        return res.status(403).json({ message: "Недостаточно средств, чтобы занять слот." });
+    }
 
     const targetSlot = lobby.slots.find(s => s.team === targetSlotInfo.team && s.position === targetSlotInfo.position);
     if (!targetSlot) return res.status(404).json({ message: "Целевой слот не найден" });
@@ -218,9 +224,9 @@ router.put('/:id/occupy', async (req, res) => {
 
         // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
     const io = req.app.get('socketio'); // Получаем io из app
-    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby.toObject()); // Отправляем всем в "комнате"
 
-    res.status(200).json(updatedLobby);
+    res.status(200).json(updatedLobby.toObject());
 
   } catch (error) {
     console.error("Ошибка при попытке занять слот:", error);
@@ -257,9 +263,9 @@ router.put('/:id/vacate', async (req, res) => {
 
         // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
     const io = req.app.get('socketio'); // Получаем io из app
-    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby.toObject()); // Отправляем всем в "комнате"
 
-    res.status(200).json(updatedLobby);
+    res.status(200).json(updatedLobby.toObject());
 
   } catch (error) {
     console.error("Ошибка при освобождении слота:", error);
@@ -314,9 +320,9 @@ router.put('/:id/ready', async (req, res) => {
 
         // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
     const io = req.app.get('socketio'); // Получаем io из app
-    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby.toObject()); // Отправляем всем в "комнате"
 
-    res.status(200).json(updatedLobby);
+    res.status(200).json(updatedLobby.toObject());
 
   } catch (error) {
     console.error("Ошибка при смене статуса готовности:", error);
@@ -327,8 +333,9 @@ router.put('/:id/ready', async (req, res) => {
 router.put('/:id/kick', async (req, res) => {
   try {
     const lobbyId = req.params.id;
-    // С фронтенда мы получим ID того, КОГО кикаем, и ID того, КТО кикает (хост)
     const { userIdToKick, hostId } = req.body;
+    const io = req.app.get('socketio'); // Получаем доступ к io
+    const roomName = String(lobbyId);
 
     if (!userIdToKick || !hostId) {
       return res.status(400).json({ message: 'Недостаточно данных для кика' });
@@ -339,37 +346,48 @@ router.put('/:id/kick', async (req, res) => {
       return res.status(404).json({ message: "Лобби не найдено" });
     }
 
-    console.log('--- ПРОВЕРКА ХОСТА ---');
-    console.log('ID хоста, сохранённый в лобби:', lobby.host.id, '| Тип:', typeof lobby.host.id);
-    console.log('ID хоста, пришедший с фронтенда:', hostId, '| Тип:', typeof hostId);
-
-    // --- 🔐 САМАЯ ВАЖНАЯ ПРОВЕРКА: АВТОРИЗАЦИЯ ---
-    // Сравниваем ID хоста из запроса с ID хоста, записанным в лобби
-    // Примечание: Убедитесь, что вы сравниваете правильные поля (например, user.id и lobby.host.id)
+    // --- 🔐 Проверка авторизации хоста (остаётся без изменений) ---
     if (String(lobby.host.id) !== String(hostId)) {
-      console.log('--- ПРОВЕРКА ПРОВАЛЕНА ---'); // Добавим лог, чтобы видеть результат
       return res.status(403).json({ message: "Только хост может кикать игроков!" });
     }
 
-    // Находим слот игрока, которого нужно кикнуть
+    // --- 1. Сначала выполняем все стандартные действия с базой данных ---
     const slotIndex = lobby.slots.findIndex(s => s.user?.id === userIdToKick);
-
     if (slotIndex !== -1) {
       lobby.bannedUsers.push(userIdToKick);
-      lobby.slots[slotIndex].user = null; // Очищаем слот
-      lobby.players = lobby.slots.filter(s => s.user).length; // Обновляем счётчик
-      lobby.markModified('slots'); // Помечаем массив как измененный
+      lobby.slots[slotIndex].user = null;
+      lobby.players = lobby.slots.filter(s => s.user).length;
+      lobby.markModified('slots');
+      lobby.markModified('bannedUsers');
     } else {
         return res.status(404).json({ message: "Кикаемый игрок не найден в слоте" });
     }
-
     const updatedLobby = await lobby.save();
 
-        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
-    const io = req.app.get('socketio'); // Получаем io из app
-    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
 
-    res.status(200).json(updatedLobby);
+    // --- 👇 НОВАЯ ЛОГИКА: ПОИСК СОКЕТА И ОТПРАВКА ЛИЧНОГО СОБЫТИЯ 👇 ---
+
+    // 2. Получаем список всех сокетов в комнате лобби
+    const socketsInRoom = await io.in(roomName).fetchSockets();
+    
+    // 3. Находим конкретный сокет кикнутого игрока, используя `socket.data.userId`,
+    // который мы установили при событии 'registerUser'.
+    const kickedSocket = socketsInRoom.find(s => String(s.data.userId) === String(userIdToKick));
+    
+    // 4. Если сокет найден, отправляем ему личное событие
+    if (kickedSocket) {
+      kickedSocket.emit('youWereKicked', { message: 'Хост исключил вас из лобби.' });
+      console.log(`[Кик] Отправлено личное уведомление о кике сокету ${kickedSocket.id}`);
+    } else {
+      console.log(`[Кик] Сокет для пользователя ${userIdToKick} не найден (возможно, он уже оффлайн).`);
+    }
+
+    // 5. После этого отправляем ОБЩЕЕ обновление всем остальным в комнате,
+    // чтобы они увидели, что слот освободился.
+    io.in(roomName).emit('lobbyUpdated', updatedLobby.toObject());
+
+    // 6. Отправляем успешный HTTP-ответ хосту.
+    res.status(200).json(updatedLobby.toObject());
 
   } catch (error) {
     console.error("Ошибка при кике игрока:", error);
@@ -405,54 +423,14 @@ router.put('/:id/start', async (req, res) => {
 
         // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
     const io = req.app.get('socketio'); // Получаем io из app
-    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby.toObject()); // Отправляем всем в "комнате"
 
-    res.status(200).json(updatedLobby);
+    res.status(200).json(updatedLobby.toObject());
 
   } catch (error)
     {
     console.error("Error starting game:", error);
     res.status(500).json({ message: 'Server error' });
-  }
-});
-
-router.post('/:id/chat', async (req, res) => {
-  try {
-    const { user, message } = req.body; // Получаем юзера и его сообщение
-
-    // Проверка на пустые сообщения
-    if (!message || message.trim() === '') {
-      return res.status(400).json({ message: "Сообщение не может быть пустым" });
-    }
-
-    const lobby = await Lobby.findOne({ id: req.params.id });
-    if (!lobby) return res.status(404).json({ message: "Лобби не найдено" });
-
-    // Создаем объект сообщения
-    const newMessage = {
-      user: {
-        id: user.id,
-        username: user.username,
-        avatarUrl: user.avatarUrl
-      },
-      message: message,
-      timestamp: new Date() // Используем дату для возможной сортировки в будущем
-    };
-
-    lobby.chat.push(newMessage);
-    lobby.markModified('chat');
-
-    const updatedLobby = await lobby.save();
-
-        // --- 👇 ОТПРАВКА ОБНОВЛЕНИЯ ЧЕРЕЗ WEBSOCKET 👇 ---
-    const io = req.app.get('socketio'); // Получаем io из app
-    io.in(req.params.id).emit('lobbyUpdated', updatedLobby); // Отправляем всем в "комнате"
-
-    res.status(200).json(updatedLobby);
-
-  } catch (error) {
-    console.error("Ошибка при отправке сообщения:", error);
-    res.status(500).json({ message: 'Ошибка сервера' });
   }
 });
 
@@ -494,7 +472,13 @@ router.post('/:id/declare-winner', async (req, res) => {
     lobby.status = 'finished';
     const updatedLobby = await lobby.save();
 
-    res.status(200).json({ message: `Команда ${winningTeam} победила!`, lobby: updatedLobby });
+    const io = req.app.get('socketio');
+    io.in(req.params.id).emit('lobbyUpdated', updatedLobby.toObject());
+
+    res.status(200).json({ 
+      message: `Команда ${winningTeam} победила!`, 
+      lobby: updatedLobby.toObject() // Добавляем .toObject() и здесь
+    });
 
   } catch (error) {
     console.error("Ошибка при распределении призов:", error);
