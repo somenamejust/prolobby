@@ -1,6 +1,6 @@
 // src/context/AuthContext.js
 import React, { createContext, useState, useContext, useEffect } from 'react';
-import axios from 'axios';
+import axios from '../api/axiosConfig';
 import toast from 'react-hot-toast';
 
 const AuthContext = createContext(null);
@@ -23,7 +23,26 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const login = (userData) => {
+  const login = async (email, password) => {
+    try {
+      // Send login credentials to the backend
+      const response = await axios.post('/api/auth/login', { email, password });
+      
+      // The server returns the user data upon successful login
+      const userData = response.data.user;
+      
+      setUser(userData);
+      updateUserInStorage(userData);
+      
+      return true; // Return true on success
+    } catch (error) {
+      console.error("Login failed:", error);
+      toast.error(error.response?.data?.message || "Login failed");
+      return false; // Return false on failure
+    }
+  };
+  
+  const setUserState = (userData) => {
     setUser(userData);
     updateUserInStorage(userData);
   };
@@ -185,6 +204,7 @@ export const AuthProvider = ({ children }) => {
       user,
       refreshUser,
       login, 
+      setUserState,
       logout, 
       joinLobbySession, 
       leaveLobbySession, 

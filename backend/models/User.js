@@ -9,6 +9,8 @@ const userSchema = new mongoose.Schema({
   avatarUrl: { type: String },
   balance: { type: Number, default: 10 },
   currentLobbyId: { type: Number, default: null },
+  steamId: { type: String, default: null, index: true },   // Для хранения SteamID64
+  steamProfile: { type: Object, default: null }, // Для хранения всех данных профиля Steam
   friends: { type: [Number], default: [] },
   friendRequests: { type: [Object], default: [] },
   outgoingRequests: { type: [Object], default: [] },

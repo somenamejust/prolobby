@@ -3,11 +3,13 @@ const http = require('http');
 const { Server } = require("socket.io");
 const cors = require('cors');
 const mongoose = require('mongoose');
+const session = require('express-session');
+const passport = require('passport');
 
 // Модели и маршруты
 const Lobby = require('./models/Lobby');
-const userRoutes = require('./routes/users');
 const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
 const lobbyRoutes = require('./routes/lobbies');
 
 // Инициализация
@@ -18,14 +20,39 @@ const PORT = 5000;
 const io = new Server(server, {
   cors: {
     origin: "http://localhost:3000",
-    methods: ["GET", "POST", "PUT"]
+    methods: ["GET", "POST", "PUT"],
+    credentials: true // --- 👇 ИЗМЕНЕНИЕ №1: Разрешаем передачу cookie 👇 ---
   }
 });
 
 // Мидлвары (помощники)
 app.set('socketio', io); // Делаем io доступным в роутах
-app.use(cors());
+
+app.set('trust proxy', 1); 
+
+// --- 👇 ИЗМЕНЕНИЕ №2: Более надёжная конфигурация CORS и сессий 👇 ---
+app.use(cors({
+    origin: 'http://localhost:3000', // Явно указываем, кому доверяем
+    credentials: true // Разрешаем браузеру отправлять cookie
+}));
+
 app.use(express.json());
+
+// --- НАСТРОЙКА СЕССИЙ И PASSPORT (ДО МАРШРУТОВ!) ---
+app.use(session({ 
+    secret: 'a_very_secret_key_that_is_long_and_secure', 
+    resave: false, 
+    saveUninitialized: false, // Оставляем false для безопасности
+    cookie: {
+        secure: false, // false для http
+        httpOnly: true,
+        sameSite: 'lax', // Lax - лучший баланс для OAuth редиректов
+        domain: 'localhost' // 👈 Явно указываем домен
+    }
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
 
 // Маршруты
 app.use('/api/auth', authRoutes);

@@ -1,15 +1,19 @@
 // src/pages/ProfilePage.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function Profile() {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUser } = useAuth();
   const navigate = useNavigate();
 
   // Состояние для формы смены аватара
   const [newAvatarUrl, setNewAvatarUrl] = useState('');
   const [isEditingAvatar, setIsEditingAvatar] = useState(false);
+
+  useEffect(() => {
+    refreshUser();
+  }, []);
 
   const handleLogout = () => {
     logout();
@@ -66,6 +70,19 @@ export default function Profile() {
                 >
                     Exit
                 </button>
+                {user && !user.steamId ? (
+                    // Если SteamID еще не привязан, показываем кнопку
+                    <a href="http://localhost:5000/api/auth/steam"
+                      className="px-6 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700">
+                        Привязать аккаунт Steam
+                    </a>
+                ) : (
+                    // Если уже привязан, показываем информацию
+                    <div>
+                        <p className="text-green-400">Аккаунт Steam успешно привязан!</p>
+                        <p>SteamID: {user.steamId}</p>
+                    </div>
+                )}
             </div>
         </div>
         

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
-import axios from 'axios';
+import axios from '../api/axiosConfig';
 import { io } from "socket.io-client";
 
 import UserProfileModal from '../components/UserProfileModal';

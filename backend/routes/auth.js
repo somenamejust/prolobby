@@ -1,30 +1,80 @@
-// backend/routes/auth.js
 const express = require('express');
+const passport = require('passport');
+const SteamStrategy = require('passport-steam').Strategy;
+const User = require('../models/User');
 const router = express.Router();
-const User = require('../models/User'); // Импортируем нашу модель
+const LocalStrategy = require('passport-local').Strategy;
+
+passport.use(new LocalStrategy({ usernameField: 'email' }, async (email, password, done) => {
+    try {
+        const user = await User.findOne({ email: email });
+        if (!user || user.password !== password) {
+            return done(null, false, { message: 'Invalid credentials.' });
+        }
+        return done(null, user);
+    } catch (err) { return done(err); }
+}));
+
+passport.use(new SteamStrategy({
+    returnURL: 'http://localhost:5000/api/auth/steam/return',
+    realm: 'http://localhost:5000/',
+    apiKey: '96485D37B4B45DD23C6B2C8C1BDBB4AF', // 👈 Don't forget your key
+    passReqToCallback: true
+  },
+  async (req, identifier, profile, done) => {
+    try {
+      const loggedInUser = req.user; // User from our session
+      if (loggedInUser) {
+        loggedInUser.steamId = profile.id;
+        loggedInUser.steamProfile = profile._json;
+        await loggedInUser.save();
+        return done(null, loggedInUser); // Return OUR user, not the steam profile
+      } else {
+        throw new Error('User not logged in before linking.');
+      }
+    } catch (err) {
+      return done(err);
+    }
+  }
+));
+
+passport.serializeUser((user, done) => {
+    done(null, user._id);
+});
+
+passport.deserializeUser(async (id, done) => {
+    const user = await User.findById(id).catch(err => done(err));
+    done(null, user || null);
+});
 
 // Маршрут для регистрации: POST /api/auth/register
-router.post('/register', async (req, res) => {
+router.post('/register', async (req, res, next) => { // Добавляем next
   try {
     const { email, password, username } = req.body;
-
-    // Проверяем, не занят ли email или username
-    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
-    if (existingUser) {
-      return res.status(400).json({ message: 'Пользователь с таким email или логином уже существует' });
+    // ... ваша проверка на существующего пользователя ...
+    if (await User.findOne({ $or: [{ email }, { username }] })) {
+      return res.status(400).json({ message: 'Email или логин уже занят' });
     }
 
     const newUser = new User({
       id: Date.now(),
       email,
       username,
-      password, // В реальном приложении пароль нужно хэшировать
+      password,
       avatarUrl: `https://api.dicebear.com/7.x/pixel-art/svg?seed=${username}`,
     });
 
-    await newUser.save(); // Сохраняем нового пользователя в базу данных
+    await newUser.save();
 
-    res.status(201).json({ message: 'Пользователь успешно зарегистрирован', user: newUser });
+    // --- 👇 ГЛАВНОЕ ИЗМЕНЕНИЕ 👇 ---
+    // Сразу после сохранения, создаём сессию для нового пользователя
+    req.login(newUser, (err) => {
+      if (err) { 
+        return next(err); 
+      }
+      // Отправляем успешный ответ с данными пользователя
+      return res.status(201).json({ message: 'Пользователь успешно зарегистрирован', user: newUser });
+    });
 
   } catch (error) {
     res.status(500).json({ message: 'Ошибка сервера' });
@@ -32,30 +82,8 @@ router.post('/register', async (req, res) => {
 });
 
 // Маршрут для входа: POST /api/auth/login
-router.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    // 1. Ищем пользователя по email в базе данных MongoDB
-    const user = await User.findOne({ email });
-    if (!user) {
-      // Если пользователь не найден
-      return res.status(400).json({ message: 'Неверный email или пароль' });
-    }
-
-    // 2. Проверяем, совпадает ли пароль
-    if (user.password !== password) {
-      // Если пароль неверный
-      return res.status(400).json({ message: 'Неверный email или пароль' });
-    }
-
-    // 3. Если все верно, отправляем данные пользователя на фронтенд
-    res.status(200).json({ message: 'Успешный вход', user: user });
-
-  } catch (error) {
-    console.error("Ошибка на сервере при входе:", error);
-    res.status(500).json({ message: 'Ошибка сервера' });
-  }
+router.post('/login', passport.authenticate('local'), (req, res) => {
+    res.status(200).json({ message: 'Login successful', user: req.user });
 });
 
 // Маршрут для обновления сессии лобби
@@ -81,5 +109,35 @@ router.put('/session', async (req, res) => {
     res.status(500).json({ message: 'Ошибка сервера при обновлении сессии' });
   }
 });
+
+router.get('/steam', passport.authenticate('steam'));
+
+// --- 👇 THE FINAL FIX IS HERE 👇 ---
+router.get('/steam/return',
+  // 1. Сначала Passport просто проверяет, что ответ от Steam корректен.
+  passport.authenticate('steam', { failureRedirect: 'http://localhost:3000/profile' }),
+  
+  // 2. После успеха, мы вручную обновляем сессию и делаем редирект.
+  async (req, res) => {
+    try {
+      // req.user здесь - это наш пользователь, обновленный в стратегии Steam
+      const updatedUserFromStrategy = req.user;
+      
+      // 3. Явно вызываем req.login(), чтобы ПЕРЕЗАПИСАТЬ старую сессию новыми данными
+      req.login(updatedUserFromStrategy, (err) => {
+        if (err) {
+          console.error("Ошибка при обновлении сессии после привязки Steam:", err);
+          return res.redirect('http://localhost:3000/profile?error=session_error');
+        }
+        
+        // 4. Теперь, когда сессия обновлена, безопасно перенаправляем на профиль
+        return res.redirect('http://localhost:3000/profile');
+      });
+    } catch (error) {
+        console.error("Критическая ошибка в /steam/return:", error);
+        res.redirect('http://localhost:3000/profile?error=unknown_error');
+    }
+  }
+);
 
 module.exports = router;

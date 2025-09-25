@@ -1,7 +1,7 @@
 // src/pages/Friends.jsx
 import React, { useState, useMemo, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios'; // 🎯 Импортируем axios для запросов
+import axios from '../api/axiosConfig'; // 🎯 Импортируем axios для запросов
 import UserProfileModal from '../components/UserProfileModal';
 
 export default function Friends() {

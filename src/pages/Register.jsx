@@ -2,8 +2,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom'; // Добавили Link
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebase';
-import { ref, get, set } from 'firebase/database';
+import axios from '../api/axiosConfig';
 
 export default function Register() {
   const [email, setEmail] = useState('');
@@ -11,7 +10,7 @@ export default function Register() {
   const [username, setUsername] = useState(''); // <-- Новое состояние для логина
   const [error, setError] = useState('');
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, setUserState } = useAuth();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -21,32 +20,19 @@ export default function Register() {
     if (password.length < 4) { /* ...проверки... */ }
 
     try {
-      // 1. Отправляем данные на наш бэкенд
-      const response = await fetch('http://localhost:5000/api/auth/register', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password, username }),
-      });
+        // 1. Отправляем данные на наш бэкенд
+        const response = await axios.post('/api/auth/register', { email, password, username });
+        const data = response.data;
 
-      const data = await response.json();
-
-      // 2. Проверяем ответ от сервера
-      if (!response.ok) {
-        // Если сервер вернул ошибку (например, "email занят"), показываем ее
-        throw new Error(data.message || 'Не удалось зарегистрироваться');
-      }
-
-      // 3. Если все успешно, логиним пользователя и переходим в профиль
-      console.log('Пользователь успешно зарегистрирован:', data.user);
-      login(data.user);
-      navigate('/profile');
-      
+        // 2. Если все успешно, сервер уже создал сессию.
+        // Нам нужно просто обновить состояние на клиенте.
+        setUserState(data.user);
+        navigate('/profile');
+        
     } catch (err) {
-      setError(err.message);
+        setError(err.response?.data?.message || 'Не удалось зарегистрироваться');
     }
-  };
+};
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">

@@ -10,36 +10,14 @@ export default function Login() {
   const navigate = useNavigate();
   
   // 👇 2. Получаем функцию login и АКТУАЛЬНЫЙ список всех пользователей из контекста
-  const { login, allUsers } = useAuth(); 
+  const { login } = useAuth(); 
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
-
-    try {
-      // 1. Отправляем запрос на наш бэкенд
-      const response = await fetch('http://localhost:5000/api/auth/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        // Если бэкенд вернул ошибку (например, 400 "Неверный пароль")
-        throw new Error(data.message);
+      e.preventDefault();
+      const success = await login(email, password);
+      if (success) {
+          navigate('/profile'); // Redirect to profile on successful login
       }
-
-      // 2. Если все успешно
-      toast.success(`Добро пожаловать, ${data.user.username}!`);
-      login(data.user); // Обновляем состояние пользователя на фронтенде
-      navigate('/lobby'); // Переходим на страницу с лобби
-      
-    } catch (err) {
-      toast.error(err.message || 'Ошибка входа');
-    }
   };
 
   return (
