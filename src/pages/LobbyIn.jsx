@@ -80,7 +80,7 @@ export default function LobbyIn() {
   useEffect(() => {
     if (!lobbyId || !user) return; // Ждём, пока загрузится и лобби, и юзер
 
-    const socket = io("http://localhost:5000");
+    const socket = io("http://164.92.250.91:5000");
     socketRef.current = socket;
 
     const handleConnect = () => {
