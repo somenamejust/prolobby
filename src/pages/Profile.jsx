@@ -72,7 +72,7 @@ export default function Profile() {
                 </button>
                 {user && !user.steamId ? (
                     // Если SteamID еще не привязан, показываем кнопку
-                    <a href="http://localhost:5000/api/auth/steam"
+                    <a href="http://164.92.250.91:5000/api/auth/steam"
                       className="px-6 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700">
                         Привязать аккаунт Steam
                     </a>

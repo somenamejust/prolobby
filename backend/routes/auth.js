@@ -16,8 +16,8 @@ passport.use(new LocalStrategy({ usernameField: 'email' }, async (email, passwor
 }));
 
 passport.use(new SteamStrategy({
-    returnURL: 'http://localhost:5000/api/auth/steam/return',
-    realm: 'http://localhost:5000/',
+    returnURL: 'http://164.92.250.91:5000/api/auth/steam/return',
+    realm: 'http://164.92.250.91:5000/',
     apiKey: process.env.STEAM_API_KEY, // 👈 Don't forget your key
     passReqToCallback: true
   },
@@ -115,7 +115,7 @@ router.get('/steam', passport.authenticate('steam'));
 // --- 👇 THE FINAL FIX IS HERE 👇 ---
 router.get('/steam/return',
   // 1. Сначала Passport просто проверяет, что ответ от Steam корректен.
-  passport.authenticate('steam', { failureRedirect: 'http://localhost:3000/profile' }),
+  passport.authenticate('steam', { failureRedirect: 'https://prolobby.vercel.app/profile' }),
   
   // 2. После успеха, мы вручную обновляем сессию и делаем редирект.
   async (req, res) => {
@@ -127,15 +127,15 @@ router.get('/steam/return',
       req.login(updatedUserFromStrategy, (err) => {
         if (err) {
           console.error("Ошибка при обновлении сессии после привязки Steam:", err);
-          return res.redirect('http://localhost:3000/profile?error=session_error');
+          return res.redirect('https://prolobby.vercel.app/profile?error=session_error');
         }
         
         // 4. Теперь, когда сессия обновлена, безопасно перенаправляем на профиль
-        return res.redirect('http://localhost:3000/profile');
+        return res.redirect('https://prolobby.vercel.app/profile');
       });
     } catch (error) {
         console.error("Критическая ошибка в /steam/return:", error);
-        res.redirect('http://localhost:3000/profile?error=unknown_error');
+        res.redirect('https://prolobby.vercel.app/profile?error=unknown_error');
     }
   }
 );
