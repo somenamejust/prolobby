@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -40,7 +42,7 @@ app.use(express.json());
 
 // --- НАСТРОЙКА СЕССИЙ И PASSPORT (ДО МАРШРУТОВ!) ---
 app.use(session({ 
-    secret: 'a_very_secret_key_that_is_long_and_secure', 
+    secret: process.env.SESSION_SECRET, 
     resave: false, 
     saveUninitialized: false, // Оставляем false для безопасности
     cookie: {
@@ -95,7 +97,7 @@ io.on('connection', (socket) => {
 });
 
 // Подключение к БД и запуск сервера
-mongoose.connect('mongodb://localhost:27017/prolobby')
+mongoose.connect(process.env.DATABASE_URL)
   .then(() => {
     console.log('Успешное подключение к MongoDB');
     server.listen(PORT, () => {

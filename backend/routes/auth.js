@@ -18,7 +18,7 @@ passport.use(new LocalStrategy({ usernameField: 'email' }, async (email, passwor
 passport.use(new SteamStrategy({
     returnURL: 'http://localhost:5000/api/auth/steam/return',
     realm: 'http://localhost:5000/',
-    apiKey: '96485D37B4B45DD23C6B2C8C1BDBB4AF', // 👈 Don't forget your key
+    apiKey: process.env.STEAM_API_KEY, // 👈 Don't forget your key
     passReqToCallback: true
   },
   async (req, identifier, profile, done) => {
